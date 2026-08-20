@@ -93,7 +93,7 @@ class WebSpotifyClient:
             raise SpotifyAgentError("Configura SPOTIFY_REDIRECT_URI")
         return value
 
-    def create_authorization(self) -> str:
+    def create_authorization(self, redirect_uri: str | None = None) -> str:
         verifier = secrets.token_urlsafe(64)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         state = secrets.token_urlsafe(24)
@@ -101,7 +101,7 @@ class WebSpotifyClient:
         params = {
             "client_id": _client_id(),
             "response_type": "code",
-            "redirect_uri": self.redirect_uri,
+            "redirect_uri": redirect_uri or self.redirect_uri,
             "scope": SCOPE,
             "code_challenge_method": "S256",
             "code_challenge": challenge,
@@ -110,7 +110,7 @@ class WebSpotifyClient:
         }
         return f"{SPOTIFY_AUTHORIZE}?{urllib.parse.urlencode(params)}"
 
-    def exchange_code(self, code: str, state: str) -> dict[str, Any]:
+    def exchange_code(self, code: str, state: str, redirect_uri: str | None = None) -> dict[str, Any]:
         saved = _read_json(self.auth_state_file, {})
         if not saved or not secrets.compare_digest(state, saved.get("state", "")):
             raise SpotifyAgentError("Stato OAuth Spotify non valido")
@@ -118,7 +118,7 @@ class WebSpotifyClient:
             raise SpotifyAgentError("Login Spotify scaduto: ripeti connessione")
         token = _request_json(SPOTIFY_TOKEN, method="POST", form={
             "client_id": _client_id(), "grant_type": "authorization_code", "code": code,
-            "redirect_uri": self.redirect_uri, "code_verifier": saved["verifier"],
+            "redirect_uri": redirect_uri or self.redirect_uri, "code_verifier": saved["verifier"],
         })
         token["expires_at"] = time.time() + int(token.get("expires_in", 3600)) - 60
         _atomic_json(self.token_file, token)

@@ -433,12 +433,22 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         return result
 
     @app.get("/api/v1/spotify/connect")
-    def spotify_connect(owner: str = Depends(current_owner)):
-        return RedirectResponse(spotify_call(spotify.create_authorization), status_code=302)
+    def spotify_connect(request: Request, owner: str = Depends(current_owner)):
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        if "workers.dev" in host or "drops" in host:
+            r_uri = f"https://{host.split(':')[0]}/api/v1/spotify/callback"
+        else:
+            r_uri = os.environ.get("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8000/spotify/callback").strip()
+        return RedirectResponse(spotify_call(lambda: spotify.create_authorization(r_uri)), status_code=302)
 
     @app.get("/api/v1/spotify/callback")
-    def spotify_callback(code: str, state: str, owner: str = Depends(current_owner)):
-        spotify_call(lambda: spotify.exchange_code(code, state))
+    def spotify_callback(request: Request, code: str, state: str, owner: str = Depends(current_owner)):
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        if "workers.dev" in host or "drops" in host:
+            r_uri = f"https://{host.split(':')[0]}/api/v1/spotify/callback"
+        else:
+            r_uri = os.environ.get("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8000/spotify/callback").strip()
+        spotify_call(lambda: spotify.exchange_code(code, state, r_uri))
         return RedirectResponse("/app/spotify", status_code=302)
 
     @app.get("/api/v1/spotify/liked")
