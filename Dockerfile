@@ -1,19 +1,3 @@
-FROM node:22-slim AS web-build
-
-WORKDIR /web
-
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
-
-COPY web/ ./
-
-ARG PUBLIC_API_URL
-ENV ASTRO_TELEMETRY_DISABLED=1 \
-    PUBLIC_API_URL=${PUBLIC_API_URL}
-
-RUN test -n "$PUBLIC_API_URL" \
-    && npm run build \
-    && grep -R --fixed-strings --quiet "$PUBLIC_API_URL" dist
 
 # Official, upstream-maintained image for the free PO token HTTP server
 # (bgutil-ytdlp-pot-provider) - the compiled server + its own node_modules.
