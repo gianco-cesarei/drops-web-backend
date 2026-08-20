@@ -377,7 +377,11 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
     @app.post("/api/v1/auth/login")
     def login(credentials: LoginRequest, request: Request, response: Response):
-        client_key = request.client.host if request.client else "unknown"
+        client_key = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for")
+        if client_key:
+            client_key = client_key.split(",")[0].strip()
+        else:
+            client_key = request.client.host if request.client else "unknown"
         if not store.allow_login_attempt(client_key, settings.login_rate_limit, settings.login_rate_window_seconds):
             raise HTTPException(status_code=429, detail="Too many login attempts")
         valid = secrets.compare_digest(credentials.username, settings.username)
