@@ -26,7 +26,8 @@ class WebStore:
                     title TEXT, artist TEXT, cover_url TEXT, raw_title TEXT, duration INTEGER,
                     label TEXT, year INTEGER, country TEXT, catalog_no TEXT, style TEXT, discogs_url TEXT,
                     bpm REAL, bpm_confidence REAL, source TEXT,
-                    filename TEXT, file_path TEXT, size INTEGER, error TEXT
+                    filename TEXT, file_path TEXT, size INTEGER, error TEXT,
+                    track_id TEXT, r2_key TEXT
                 );
                 CREATE INDEX IF NOT EXISTS jobs_owner_id ON jobs(owner, id);
                 CREATE TABLE IF NOT EXISTS login_attempts (
@@ -35,6 +36,14 @@ class WebStore:
                 CREATE INDEX IF NOT EXISTS login_attempts_key_time
                     ON login_attempts(client_key, attempted_at);
             """)
+            # Idempotent migration for pre-existing databases created before the
+            # cloud-storage columns were added (the CREATE above only fires on a
+            # fresh DB). Render's free tier recreates the DB each deploy, but a
+            # long-lived local dev DB needs these backfilled.
+            existing = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+            for column in ("track_id", "r2_key"):
+                if column not in existing:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=10)

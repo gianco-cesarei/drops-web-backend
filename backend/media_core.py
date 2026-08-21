@@ -121,6 +121,21 @@ def is_supported_url(value: str) -> bool:
     return any(host == domain or host.endswith(f".{domain}") for domain in ALLOWED_DOMAINS)
 
 
+YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "music.youtube.com")
+
+
+def is_youtube_url(value: str) -> bool:
+    """True only for YouTube URLs (used by the YouTube-only direct endpoint)."""
+    try:
+        parsed = urllib.parse.urlsplit(value.strip())
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.lower().rstrip(".")
+    return any(host == domain or host.endswith(f".{domain}") for domain in YOUTUBE_DOMAINS)
+
+
 _NOISE_BRACKET_TOKENS = (
     "official", "free download", "premiere", "label", "records", "out now",
     "video oficial", "audio oficial", "hq", "hd", "4k", "lyric video", "original mix",

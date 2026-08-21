@@ -1,0 +1,4 @@
+# Test-only dependencies (not installed in the production image).
+-r requirements-web.txt
+pytest>=8.0.0
+httpx>=0.27.0

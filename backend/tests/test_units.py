@@ -1,0 +1,59 @@
+"""Unit tests for the pure pieces: R2 key building and the catalog store."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import r2_storage
+import track_store
+
+
+def test_build_object_key_layout():
+    key = r2_storage.build_object_key("dj", "Techno", "Artist", "Title")
+    assert key == "dj/Techno/Artist - Title.mp3"
+
+
+def test_build_object_key_keeps_accents_drops_unsafe():
+    key = r2_storage.build_object_key("dj", "Minimal / Deep", "Rødhåd", "Track: Name/Weird ⚡")
+    # slash -> dash, accents kept, control/emoji/colon stripped.
+    assert key == "dj/Minimal - Deep/Rødhåd - Track Name-Weird.mp3"
+
+
+def test_build_object_key_placeholders_when_missing():
+    key = r2_storage.build_object_key("dj", None, None, None)
+    assert key == "dj/Unknown/Unknown Artist - Unknown Title.mp3"
+
+
+def test_is_configured_false_without_env(monkeypatch):
+    for name in ("DROPS_R2_ACCOUNT_ID", "DROPS_R2_ACCESS_KEY_ID", "DROPS_R2_SECRET_ACCESS_KEY", "DROPS_R2_BUCKET", "DROPS_R2_ENDPOINT_URL"):
+        monkeypatch.delenv(name, raising=False)
+    assert r2_storage.is_configured() is False
+
+
+def test_is_configured_true_with_env(monkeypatch):
+    monkeypatch.setenv("DROPS_R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("DROPS_R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("DROPS_R2_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("DROPS_R2_BUCKET", "bucket")
+    assert r2_storage.is_configured() is True
+
+
+def test_track_store_crud(tmp_path: Path):
+    store = track_store.TrackStore(tmp_path / "state")
+    created = store.create_track(user_id="dj", r2_key="dj/Techno/A - B.mp3", artist="A", title="B", genre="Techno")
+    tid = created["track_id"]
+    assert store.get_track(tid)["title"] == "B"
+    assert store.update_bpm(tid, 128.0) is True
+    assert store.get_track(tid)["bpm"] == 128.0
+    assert [t["track_id"] for t in store.list_tracks("dj")] == [tid]
+    assert store.list_tracks("someone-else") == []
+    # ownership-scoped delete
+    assert store.delete_track(tid, user_id="wrong") is None
+    assert store.delete_track(tid, user_id="dj") == "dj/Techno/A - B.mp3"
+    assert store.get_track(tid) is None
+
+
+def test_track_store_normalizes_postgres_url(tmp_path: Path):
+    assert track_store.resolve_database_url(tmp_path, "postgres://u:p@h:5432/db").startswith("postgresql+psycopg2://")
+    assert track_store.resolve_database_url(tmp_path, "postgresql://u:p@h:5432/db").startswith("postgresql+psycopg2://")
+    assert track_store.resolve_database_url(tmp_path, "").startswith("sqlite:///")

@@ -21,13 +21,16 @@ from pydantic import BaseModel
 
 import urllib.request
 from bpm_analyzer import analyze_bpm
-from download_engine import AUDIO_QUALITY, download_multi_source
+from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
 from media_core import is_supported_url, resolve_track, safe_filename, tag_audio_file, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_proxy
 from spotify_agent import SpotifyAgentError, WebSpotifyClient
 from discogs_agent import DiscogsClient
 from bpm_jobs import BpmJobManager
 from web_settings import WebSettings
 from web_store import WebStore
+from track_store import TrackStore
+import r2_storage
+from media_core import is_youtube_url
 
 COOKIE_NAME = "drops_session"
 logger = logging.getLogger("drops.web")
@@ -43,6 +46,16 @@ class WebDownloadRequest(BaseModel):
     quality: str = "320"
     artist: str | None = None
     title: str | None = None
+    cover_url: str | None = None
+
+
+class YoutubeDirectRequest(BaseModel):
+    url: str
+    # Optional metadata overrides; when omitted they are recognized from the
+    # video via resolve_track / Discogs enrichment exactly like the main flow.
+    artist: str | None = None
+    title: str | None = None
+    genre: str | None = None
     cover_url: str | None = None
 
 
@@ -97,6 +110,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     jobs_dir = settings.state_dir / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     store = WebStore(settings.state_dir / "web.sqlite3")
+    # Durable cloud catalog (Supabase Postgres in prod, SQLite fallback in dev).
+    tracks = TrackStore(settings.state_dir, settings.database_url)
     discogs = DiscogsClient(settings.state_dir)
     spotify = WebSpotifyClient(settings.state_dir, discogs=discogs)
     bpm_jobs = BpmJobManager(settings.state_dir, max_workers=min(2, settings.max_concurrent))
@@ -151,6 +166,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     app = FastAPI(title="Drops Web API", lifespan=lifespan)
     app.state.settings = settings
     app.state.store = store
+    app.state.tracks = tracks
     app.state.discogs = discogs
     app.state.executor = None
 
@@ -220,13 +236,20 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "label", "year", "country", "catalog_no", "discogs_url",
             "bpm", "bpm_confidence", "source",
             "filename", "size", "error",
+            "track_id", "r2_key",
         ):
             if row[key] is not None:
                 result[key] = row[key]
         if row["style"]:
             result["style"] = json.loads(row["style"])
         if row["status"] == "ready":
-            result["file_url"] = f"/api/v1/downloads/{row['id']}/file"
+            # Local file endpoint only when the artifact is still on disk. The
+            # cloud (youtube-direct) flow deletes the local file after uploading
+            # to R2, so it exposes a stream_url instead of a file_url.
+            if row["file_path"]:
+                result["file_url"] = f"/api/v1/downloads/{row['id']}/file"
+            if row["track_id"]:
+                result["stream_url"] = f"/api/stream/{row['track_id']}"
         return result
 
     def process_job(job_id: str, url: str, quality: str) -> None:
@@ -371,6 +394,167 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             shutil.rmtree(job_dir, ignore_errors=True)
             store.update_job(job_id, status="error", error="Download failed", expires_at=time.time() + settings.artifact_ttl_seconds)
 
+    def process_youtube_direct(job_id: str, url: str, owner: str, req_genre: str | None) -> None:
+        """YouTube-only direct download (Sezione 1, Task 1.1) with cloud storage.
+
+        Differs from process_job in two ways:
+        * Audio is pulled *straight from the given YouTube video* at MP3 320kbps -
+          no SoundCloud-first substitution - because the whole point is grabbing
+          the exclusive/bootleg that only exists on that video.
+        * On success the file is uploaded to Cloudflare R2, a durable `tracks`
+          row is written to Supabase, and the local temp file is dropped so
+          Render's disk never fills. The track is then streamed via presigned
+          URLs (/api/stream/{track_id}) instead of the local /file endpoint.
+
+        When R2 is not configured (local dev / tests) it degrades to the classic
+        behaviour: the file stays on disk and is served by the local endpoint,
+        so nothing about this path requires R2 credentials to exercise.
+        """
+        job_dir = jobs_dir / job_id
+        job_dir.mkdir(mode=0o700)
+        started = time.monotonic()
+        row = store.get_job_by_id(job_id)
+        artist = row["artist"] if row else None
+        title = row["title"] if row else None
+
+        # Best-effort Discogs enrichment for label/year/genre + cover, same as
+        # the main flow. Genre feeds both the R2 key and the catalog row.
+        enrichment = None
+        if artist and title:
+            store.update_job(job_id, status="enriching")
+            try:
+                enrichment = discogs.enrich(artist, title)
+            except Exception as exc:
+                logger.info("discogs enrich skip job_id=%s detail=%r", job_id, str(exc)[:200])
+                enrichment = None
+            if enrichment:
+                update = {
+                    "label": enrichment.get("label"),
+                    "year": enrichment.get("year"),
+                    "country": enrichment.get("country"),
+                    "catalog_no": enrichment.get("catalog_no"),
+                    "style": json.dumps(enrichment.get("styles") or []),
+                    "discogs_url": enrichment.get("discogs_url"),
+                }
+                if enrichment.get("cover_url"):
+                    update["cover_url"] = enrichment["cover_url"]
+                store.update_job(job_id, **update)
+
+        styles = (enrichment.get("styles") if enrichment else None) or []
+        genre_str = (req_genre.strip() if req_genre and req_genre.strip() else None) or (
+            ", ".join(styles[:3]) if styles else None
+        )
+
+        try:
+            store.update_job(job_id, status="downloading")
+            # YouTube-only, forced 320kbps. attempt_download runs yt-dlp directly
+            # on this exact video (no ytsearch/soundcloud fallback).
+            info = attempt_download(job_dir, url, "320", settings, started, proxy=ytdlp_proxy())
+            if int(info.get("duration") or 0) > settings.max_duration_seconds:
+                raise yt_dlp.utils.DownloadError("Media duration limit exceeded")
+            candidates = [p for p in job_dir.iterdir() if p.is_file() and not p.name.endswith((".part", ".ytdl"))]
+            if len(candidates) != 1:
+                raise RuntimeError("Downloaded artifact missing")
+            source_file = candidates[0]
+            if source_file.stat().st_size > settings.max_file_bytes:
+                raise yt_dlp.utils.DownloadError("Download size limit exceeded")
+
+            final_title = str(info.get("title") or title or "audio")[:200]
+            filename = safe_filename(final_title, "mp3")
+            artifact = job_dir / filename
+            if source_file != artifact:
+                source_file.replace(artifact)
+
+            # Cover art + base ID3 tags now (BPM added later off the critical path).
+            cover_data = None
+            row_cover = row["cover_url"] if (row is not None and "cover_url" in row.keys()) else None
+            cover_url_to_fetch = (enrichment.get("cover_url") if enrichment else None) or row_cover
+            if cover_url_to_fetch:
+                try:
+                    req = urllib.request.Request(cover_url_to_fetch, headers={"User-Agent": "Drops/1.0"})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        cover_data = resp.read()
+                except Exception as c_exc:
+                    logger.info("cover download skip detail=%r", str(c_exc)[:100])
+
+            tag_label = enrichment.get("label") if enrichment else None
+            tag_year = enrichment.get("year") if enrichment else None
+            try:
+                tag_audio_file(
+                    artifact, title=final_title, artist=artist, label=tag_label,
+                    year=tag_year, genre=genre_str, bpm=None, cover_data=cover_data,
+                )
+            except Exception as tag_exc:
+                logger.info("id3 tagging skip detail=%r", str(tag_exc)[:100])
+
+            duration_val = int(info.get("duration") or 0) or None
+            size_val = artifact.stat().st_size
+
+            track_id = None
+            r2_key = None
+            if r2_storage.is_configured():
+                store.update_job(job_id, status="uploading")
+                r2_key = r2_storage.build_object_key(owner, genre_str, artist, final_title)
+                r2_storage.upload_file(str(artifact), r2_key)
+                track = tracks.create_track(
+                    user_id=owner, r2_key=r2_key, artist=artist,
+                    title=final_title, genre=genre_str, bpm=None,
+                )
+                track_id = track["track_id"]
+                store.update_job(
+                    job_id, status="ready", title=final_title, filename=filename,
+                    file_path=None, size=size_val, source="youtube", duration=duration_val,
+                    track_id=track_id, r2_key=r2_key,
+                    expires_at=time.time() + settings.artifact_ttl_seconds,
+                )
+                logger.info("youtube-direct ready (cloud) job_id=%s track_id=%s", job_id, track_id)
+            else:
+                # No R2 configured: keep the file local and downloadable, exactly
+                # like the classic flow. No catalog row is written.
+                store.update_job(
+                    job_id, status="ready", title=final_title, filename=filename,
+                    file_path=str(artifact), size=size_val, source="youtube", duration=duration_val,
+                    expires_at=time.time() + settings.artifact_ttl_seconds,
+                )
+                logger.info("youtube-direct ready (local, R2 disabled) job_id=%s", job_id)
+
+            # BPM off the critical path. It reads the still-local file (no wasted
+            # R2 re-download), writes the value to the catalog DB - the source of
+            # truth for filtering/playback per the roadmap - and only then drops
+            # the local temp file. The audio inside R2 is left untouched: the
+            # desktop app writes the definitive BPM tag at USB-export time.
+            def _bpm_and_cleanup(path=artifact, jid=job_id, tid=track_id, cloud=bool(track_id and r2_key)):
+                try:
+                    result = analyze_bpm(path, max_seconds=120)
+                    bpm_value = result["bpm"]
+                except Exception as exc:
+                    logger.info("bpm skip job_id=%s detail=%r", jid, str(exc)[:200])
+                    bpm_value = None
+                if bpm_value is not None:
+                    try:
+                        store.update_job(jid, bpm=bpm_value, bpm_confidence=result.get("bpm_confidence"))
+                    except Exception as up_exc:
+                        logger.info("bpm job update skip job_id=%s detail=%r", jid, str(up_exc)[:100])
+                    if tid:
+                        try:
+                            tracks.update_bpm(tid, bpm_value)
+                        except Exception as db_exc:
+                            logger.info("bpm track update skip track_id=%s detail=%r", tid, str(db_exc)[:100])
+                if cloud:
+                    # Cloud is the source of truth; free Render's disk now.
+                    shutil.rmtree(job_dir, ignore_errors=True)
+
+            threading.Thread(target=_bpm_and_cleanup, name=f"ytd-bpm-{job_id}", daemon=True).start()
+        except yt_dlp.utils.DownloadError as exc:
+            logger.error("youtube-direct worker failed job_id=%s error_type=DownloadError", job_id)
+            shutil.rmtree(job_dir, ignore_errors=True)
+            detail = str(exc).replace(url, "[url]").replace(str(job_dir), "[job]").strip() or "Download failed"
+            store.update_job(job_id, status="error", error=detail[:300], expires_at=time.time() + settings.artifact_ttl_seconds)
+        except Exception as exc:  # worker boundary: detail to server log only
+            logger.error("youtube-direct worker failed job_id=%s error_type=%s detail=%r", job_id, type(exc).__name__, str(exc)[:300])
+            shutil.rmtree(job_dir, ignore_errors=True)
+            store.update_job(job_id, status="error", error="Download failed", expires_at=time.time() + settings.artifact_ttl_seconds)
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
@@ -502,6 +686,51 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         app.state.executor.submit(process_job, job_id, request.url, request.quality)
         return public_job(store.get_job(job_id, owner))
 
+    # --- Sezione 1 · Task 1.1: YouTube-only direct download -----------------
+    @app.post("/api/download/youtube-direct", status_code=202)
+    def youtube_direct(
+        request: YoutubeDirectRequest,
+        owner: str = Depends(current_owner),
+        _: None = Depends(require_csrf_origin),
+    ):
+        """Extract audio (MP3 320kbps) directly from a YouTube video containing
+        an exclusive track/set, asynchronously. Returns a task_id to poll for
+        status; on success the track lands in the user's R2 cloud library."""
+        if not is_youtube_url(request.url):
+            raise HTTPException(status_code=400, detail="URL must be a YouTube link")
+        job_id = str(uuid.uuid4())
+        recognized = resolve_track(request.url)
+        accepted = store.create_job_if_capacity(
+            job_id,
+            owner,
+            request.url,
+            "audio",
+            "320",
+            settings.max_duration_seconds + settings.artifact_ttl_seconds,
+            settings.max_queued + settings.max_concurrent,
+            title=request.title or recognized.get("title"),
+            artist=request.artist or recognized.get("artist"),
+            cover_url=request.cover_url or recognized.get("cover_url"),
+            raw_title=recognized.get("raw_title"),
+            duration=recognized.get("duration"),
+        )
+        if not accepted:
+            raise HTTPException(status_code=429, detail="Download queue full")
+        app.state.executor.submit(process_youtube_direct, job_id, request.url, owner, request.genre)
+        job = public_job(store.get_job(job_id, owner))
+        # Expose the polling id under the roadmap's "task_id" name too.
+        job["task_id"] = job_id
+        return job
+
+    @app.get("/api/download/youtube-direct/{task_id}")
+    def youtube_direct_status(task_id: str, owner: str = Depends(current_owner)):
+        row = store.get_job(task_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        job = public_job(row)
+        job["task_id"] = row["id"]
+        return job
+
     @app.post("/api/v1/playlists/resolve")
     def resolve_playlist(
         request: PlaylistResolveRequest,
@@ -572,6 +801,46 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if path.parent != expected_root or not path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         return FileResponse(path, filename=row["filename"], media_type="audio/mpeg")
+
+    # --- Sezione 3 · Task 3.1/3.2: cloud library + private streaming --------
+    @app.get("/api/tracks")
+    def list_tracks(
+        limit: int = Query(200, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        owner: str = Depends(current_owner),
+    ):
+        """The authenticated user's cloud library (Supabase-backed catalog)."""
+        return {"tracks": tracks.list_tracks(owner, limit=limit, offset=offset)}
+
+    @app.get("/api/stream/{track_id}")
+    def stream_track(track_id: str, owner: str = Depends(current_owner)):
+        """Return a short-lived presigned R2 URL to stream a track the caller
+        owns. Ownership is enforced against the catalog before any URL is
+        minted, so one user can never mint a link for another user's file."""
+        track = tracks.get_track(track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+        if track["user_id"] != owner:
+            # 404 (not 403) so we never confirm the existence of another user's
+            # track to someone who doesn't own it.
+            raise HTTPException(status_code=404, detail="Track not found")
+        if not r2_storage.is_configured():
+            raise HTTPException(status_code=503, detail="Cloud storage not configured")
+        try:
+            ttl = r2_storage.presign_ttl_seconds()
+            url = r2_storage.generate_presigned_url(track["r2_key"], expires_in=ttl)
+        except r2_storage.R2Error as exc:
+            logger.warning("presign failed track_id=%s detail=%r", track_id, str(exc)[:120])
+            raise HTTPException(status_code=502, detail="Could not generate stream URL") from exc
+        return {
+            "track_id": track_id,
+            "url": url,
+            "expires_in": ttl,
+            "title": track["title"],
+            "artist": track["artist"],
+            "genre": track["genre"],
+            "bpm": track["bpm"],
+        }
 
     @app.post("/api/v1/downloads/zip")
     def export_zip(

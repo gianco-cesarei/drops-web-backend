@@ -34,6 +34,7 @@ class WebSettings:
     environment: str = "production"
     allow_missing_origin: bool = False
     session_secret: str = ""
+    database_url: str = ""
 
     def __post_init__(self) -> None:
         if self.environment not in {"production", "development", "test"}:
@@ -89,4 +90,8 @@ class WebSettings:
             environment=os.environ.get("DROPS_WEB_ENV", "production").strip().lower(),
             allow_missing_origin=_bool("DROPS_WEB_ALLOW_MISSING_ORIGIN", False),
             session_secret=os.environ.get("DROPS_WEB_SESSION_SECRET", "").strip(),
+            # Supabase Postgres connection string. Empty -> TrackStore falls back
+            # to a local SQLite file (dev/test), keeping the cloud catalog code
+            # path identical without an external database.
+            database_url=os.environ.get("DATABASE_URL", "").strip(),
         )
