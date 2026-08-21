@@ -933,4 +933,122 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/api/v1/content/extract-cover")
+    def extract_cover(url: str, owner: str = Depends(current_owner)):
+        """Extract og:image or cover artwork from a source reference URL."""
+        import urllib.request
+        import urllib.parse
+        import re
+        
+        if not url.startswith("http://") and not url.startswith("https://"):
+            raise HTTPException(status_code=400, detail="URL non valido")
+            
+        try:
+            req = urllib.request.Request(
+                url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                content = response.read()
+                html = content.decode('utf-8', errors='ignore')
+                
+                # Cerca og:image
+                match = re.search(r'<meta\s+[^>]*property=["\']og:image["\']\s+[^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                if not match:
+                    match = re.search(r'<meta\s+[^>]*content=["\']([^"\']+)["\']\s+[^>]*property=["\']og:image["\']', html, re.IGNORECASE)
+                if not match:
+                    match = re.search(r'<meta\s+[^>]*name=["\']twitter:image["\']\s+[^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                if not match:
+                    match = re.search(r'<meta\s+[^>]*content=["\']([^"\']+)["\']\s+[^>]*name=["\']twitter:image["\']', html, re.IGNORECASE)
+                    
+                if match:
+                    img_url = match.group(1).strip()
+                    if img_url.startswith('//'):
+                        img_url = 'https:' + img_url
+                    elif img_url.startswith('/'):
+                        parsed = urllib.parse.urlparse(url)
+                        img_url = f"{parsed.scheme}://{parsed.netloc}{img_url}"
+                    return {"image_url": img_url}
+                    
+                # Fallback img tags
+                img_matches = re.findall(r'<img\s+[^>]*src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                for img in img_matches:
+                    if 'logo' not in img.lower() and ('http' in img or img.startswith('/')):
+                        if img.startswith('//'):
+                            img = 'https:' + img
+                        elif img.startswith('/'):
+                            parsed = urllib.parse.urlparse(url)
+                            img = f"{parsed.scheme}://{parsed.netloc}{img}"
+                        return {"image_url": img}
+                        
+                raise HTTPException(status_code=404, detail="Nessuna immagine di copertina trovata nei metadati della pagina")
+        except Exception as e:
+            logger.error("Failed to extract cover from url=%s detail=%r", url, str(e))
+            raise HTTPException(status_code=502, detail=f"Errore nel recupero della pagina: {str(e)}")
+
+    @app.post("/api/v1/content/save")
+    def save_article(article: dict, owner: str = Depends(current_owner)):
+        """Save or update an article directly inside content.json on the local disk."""
+        import json
+        
+        art_id = article.get("id")
+        if not art_id:
+            raise HTTPException(status_code=400, detail="ID articolo mancante")
+            
+        json_path = Path(__file__).resolve().parent.parent.parent / "drops-web-frontend" / "src" / "data" / "content.json"
+        
+        try:
+            if json_path.is_file():
+                with open(json_path, "r", encoding="utf-8") as f:
+                    articles = json.load(f)
+            else:
+                articles = []
+                
+            found = False
+            for idx, art in enumerate(articles):
+                if art["id"] == art_id:
+                    articles[idx] = article
+                    found = True
+                    break
+                    
+            if not found:
+                articles.append(article)
+                
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(articles, f, indent=2, ensure_ascii=False)
+                
+            return {"status": "success", "article": article}
+        except Exception as e:
+            logger.error("Failed to save article id=%s detail=%r", art_id, str(e))
+            raise HTTPException(status_code=500, detail=f"Errore durante il salvataggio sul disco: {str(e)}")
+
+    @app.delete("/api/v1/content/delete/{article_id}")
+    def delete_article(article_id: str, owner: str = Depends(current_owner)):
+        """Delete an article from content.json on the local disk."""
+        import json
+        
+        json_path = Path(__file__).resolve().parent.parent.parent / "drops-web-frontend" / "src" / "data" / "content.json"
+        
+        try:
+            if json_path.is_file():
+                with open(json_path, "r", encoding="utf-8") as f:
+                    articles = json.load(f)
+            else:
+                raise HTTPException(status_code=404, detail="File content.json non trovato")
+                
+            updated_articles = [art for art in articles if art["id"] != article_id]
+            if len(updated_articles) == len(articles):
+                raise HTTPException(status_code=404, detail="Articolo non trovato")
+                
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(updated_articles, f, indent=2, ensure_ascii=False)
+                
+            return {"status": "success"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Failed to delete article id=%s detail=%r", article_id, str(e))
+            raise HTTPException(status_code=500, detail=f"Errore durante l'eliminazione: {str(e)}")
+
     return app
+
