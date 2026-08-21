@@ -252,11 +252,41 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 result["stream_url"] = f"/api/stream/{row['track_id']}"
         return result
 
+    def promote_to_cloud(owner, artifact, genre_str, artist, title):
+        """Upload a finished MP3 to R2 and write its durable catalog row.
+
+        Best-effort by design: returns (track_id, r2_key) on success, or
+        (None, None) when R2 is not configured or the upload / DB write fails -
+        in which case the caller keeps serving the local file and simply skips
+        cloud promotion, so a transient R2/Supabase outage never fails a
+        download. Shared by both the multi-source flow and youtube-direct.
+        """
+        if not r2_storage.is_configured():
+            return None, None
+        try:
+            r2_key = r2_storage.build_object_key(owner, genre_str, artist, title)
+            r2_storage.upload_file(str(artifact), r2_key)
+        except r2_storage.R2Error as exc:
+            logger.warning("r2 upload failed, keeping local owner=%s detail=%r", owner, str(exc)[:120])
+            return None, None
+        try:
+            track = tracks.create_track(
+                user_id=owner, r2_key=r2_key, artist=artist,
+                title=title, genre=genre_str, bpm=None,
+            )
+        except Exception as exc:
+            logger.warning("track catalog insert failed detail=%r", str(exc)[:150])
+            # Avoid an orphan object in R2 with no catalog row pointing at it.
+            r2_storage.delete_object(r2_key)
+            return None, None
+        return track["track_id"], r2_key
+
     def process_job(job_id: str, url: str, quality: str) -> None:
         job_dir = jobs_dir / job_id
         job_dir.mkdir(mode=0o700)
         started = time.monotonic()
         row = store.get_job_by_id(job_id)
+        owner = row["owner"] if row else None
         artist = row["artist"] if row else None
         title = row["title"] if row else None
         duration = row["duration"] if row else None
@@ -340,6 +370,15 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             except Exception as tag_exc:
                 logger.info("id3 tagging skip detail=%r", str(tag_exc)[:100])
 
+            # Cloud durability (Sezione 3): promote to R2 + Supabase catalog so
+            # the track survives Render's ephemeral disk being wiped on restart -
+            # important for downloads coming from Spotify/SoundCloud likes. Unlike
+            # youtube-direct we KEEP the local file so /file and the zip export
+            # keep working for the rest of the session; the TTL cleanup removes it
+            # later. R2 object carries base tags (no BPM); the DB is the source of
+            # truth for BPM.
+            track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title)
+
             # Mark ready immediately: the card lands in "scaricati" and the file is
             # downloadable without waiting for BPM analysis.
             store.update_job(
@@ -351,6 +390,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 size=artifact.stat().st_size,
                 source=source,
                 duration=int(info.get("duration") or 0) or None,
+                track_id=track_id,
+                r2_key=r2_key,
                 expires_at=time.time() + settings.artifact_ttl_seconds,
             )
 
@@ -362,8 +403,9 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             )
 
             # BPM off the critical path: analyze in a daemon thread, then patch the
-            # job row and re-tag the file. Failure never affects the ready download.
-            def _bpm_async(path=artifact, jid=job_id, t=final_title, a=artist,
+            # job row, the cloud catalog row, and re-tag the local file. Failure
+            # never affects the ready download.
+            def _bpm_async(path=artifact, jid=job_id, tid=track_id, t=final_title, a=artist,
                            lbl=tag_label, yr=tag_year, g=genre_str, cov=cover_data):
                 try:
                     result = analyze_bpm(path, max_seconds=120)
@@ -374,6 +416,11 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                     store.update_job(jid, bpm=result["bpm"], bpm_confidence=result.get("bpm_confidence"))
                 except Exception as up_exc:
                     logger.info("bpm update skip job_id=%s detail=%r", jid, str(up_exc)[:100])
+                if tid:
+                    try:
+                        tracks.update_bpm(tid, result["bpm"])
+                    except Exception as db_exc:
+                        logger.info("bpm track update skip track_id=%s detail=%r", tid, str(db_exc)[:100])
                 try:
                     tag_audio_file(path, title=t, artist=a, label=lbl, year=yr, genre=g, bpm=result["bpm"], cover_data=cov)
                 except Exception as tag_exc:
@@ -490,17 +537,12 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             duration_val = int(info.get("duration") or 0) or None
             size_val = artifact.stat().st_size
 
-            track_id = None
-            r2_key = None
             if r2_storage.is_configured():
                 store.update_job(job_id, status="uploading")
-                r2_key = r2_storage.build_object_key(owner, genre_str, artist, final_title)
-                r2_storage.upload_file(str(artifact), r2_key)
-                track = tracks.create_track(
-                    user_id=owner, r2_key=r2_key, artist=artist,
-                    title=final_title, genre=genre_str, bpm=None,
-                )
-                track_id = track["track_id"]
+            track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title)
+            if track_id:
+                # Cloud is the source of truth: no local file endpoint, and the
+                # local temp file is dropped after BPM (see _bpm_and_cleanup).
                 store.update_job(
                     job_id, status="ready", title=final_title, filename=filename,
                     file_path=None, size=size_val, source="youtube", duration=duration_val,
@@ -509,14 +551,15 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 )
                 logger.info("youtube-direct ready (cloud) job_id=%s track_id=%s", job_id, track_id)
             else:
-                # No R2 configured: keep the file local and downloadable, exactly
-                # like the classic flow. No catalog row is written.
+                # R2 disabled or the upload/catalog write failed: fall back to the
+                # classic behaviour - keep the file local and downloadable, no
+                # catalog row. The download still succeeds either way.
                 store.update_job(
                     job_id, status="ready", title=final_title, filename=filename,
                     file_path=str(artifact), size=size_val, source="youtube", duration=duration_val,
                     expires_at=time.time() + settings.artifact_ttl_seconds,
                 )
-                logger.info("youtube-direct ready (local, R2 disabled) job_id=%s", job_id)
+                logger.info("youtube-direct ready (local fallback) job_id=%s", job_id)
 
             # BPM off the critical path. It reads the still-local file (no wasted
             # R2 re-download), writes the value to the catalog DB - the source of
