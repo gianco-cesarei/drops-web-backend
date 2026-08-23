@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import download_engine
 import r2_storage
 import track_store
 
@@ -57,3 +59,36 @@ def test_track_store_normalizes_postgres_url(tmp_path: Path):
     assert track_store.resolve_database_url(tmp_path, "postgres://u:p@h:5432/db").startswith("postgresql+psycopg2://")
     assert track_store.resolve_database_url(tmp_path, "postgresql://u:p@h:5432/db").startswith("postgresql+psycopg2://")
     assert track_store.resolve_database_url(tmp_path, "").startswith("sqlite:///")
+
+
+def test_explicit_youtube_url_never_substitutes_soundcloud(monkeypatch, tmp_path: Path):
+    requested_url = "https://www.youtube.com/watch?v=JbySohLL3io"
+    calls = []
+
+    def fake_attempt(job_dir, url, quality, settings, started, *, proxy=None):
+        calls.append((url, proxy))
+        return {"title": "Miles Mercer - Voice Control [FOR07]", "duration": 200}
+
+    def unexpected_soundcloud_search(*args, **kwargs):
+        raise AssertionError("explicit YouTube URL must not search SoundCloud")
+
+    monkeypatch.setattr(download_engine, "attempt_download", fake_attempt)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", unexpected_soundcloud_search)
+
+    info, source = download_engine.download_multi_source(
+        tmp_path,
+        "job-1",
+        requested_url,
+        "Miles Mercer",
+        "Voice Control",
+        None,
+        "320",
+        SimpleNamespace(),
+        0.0,
+        proxy="http://proxy.invalid:8080",
+        raw_title="Miles Mercer - Voice Control [FOR07]",
+    )
+
+    assert source == "youtube"
+    assert info["title"] == "Miles Mercer - Voice Control [FOR07]"
+    assert calls == [(requested_url, "http://proxy.invalid:8080")]

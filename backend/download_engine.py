@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import yt_dlp
 
-from media_core import YTDLP_LOCK, strip_noise, ytdlp_cookiefile, ytdlp_extractor_args
+from media_core import YTDLP_LOCK, is_youtube_url, strip_noise, ytdlp_cookiefile, ytdlp_extractor_args
 
 logger = logging.getLogger("drops.download")
 
@@ -299,6 +299,14 @@ def download_multi_source(
     raw_title: str | None = None, catalog_no: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """SoundCloud first (only if it's a confident match), native source (or YouTube search) last."""
+    # An explicit YouTube URL identifies the exact recording requested by the
+    # user. Metadata recognition may label that recording, but must never turn
+    # it into a search query or substitute a similarly named SoundCloud track.
+    if is_youtube_url(native_url):
+        info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
+        logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
+        return info, "youtube"
+
     match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
     if match_url:
         try:
