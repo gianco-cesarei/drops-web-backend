@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 import urllib.request
+import urllib.parse
 from bpm_analyzer import analyze_bpm
 from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
 from media_core import is_supported_url, resolve_track, safe_filename, tag_audio_file, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_proxy
@@ -77,6 +78,43 @@ class BpmComputeRequest(BaseModel):
     title: str
     isrc: str | None = None
     source_url: str | None = None
+
+
+def _youtube_url_context(value: str) -> dict[str, str | None]:
+    """Describe whether a YouTube URL identifies a track, playlist, or both."""
+    if not is_youtube_url(value):
+        return {
+            "url_type": None,
+            "playlist_id": None,
+            "selected_track_id": None,
+            "selected_track_url": None,
+        }
+    parsed = urllib.parse.urlsplit(value.strip())
+    query = urllib.parse.parse_qs(parsed.query)
+    playlist_id = (query.get("list") or [None])[0]
+    selected_track_id = (query.get("v") or [None])[0]
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if not selected_track_id and host == "youtu.be" and path_parts:
+        selected_track_id = path_parts[0]
+    if not selected_track_id and len(path_parts) >= 2 and path_parts[0] in {"shorts", "embed"}:
+        selected_track_id = path_parts[1]
+    if playlist_id and selected_track_id:
+        url_type = "track_in_playlist"
+    elif playlist_id:
+        url_type = "playlist"
+    else:
+        url_type = "track"
+    selected_track_url = (
+        f"https://www.youtube.com/watch?v={urllib.parse.quote(selected_track_id, safe='-_')}"
+        if selected_track_id else None
+    )
+    return {
+        "url_type": url_type,
+        "playlist_id": playlist_id,
+        "selected_track_id": selected_track_id,
+        "selected_track_url": selected_track_url,
+    }
 
 
 def _playlist_entry_url(entry: dict, original_url: str) -> str | None:
@@ -782,6 +820,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     ):
         if not is_supported_url(request.url):
             raise HTTPException(status_code=400, detail="Unsupported URL")
+        url_context = _youtube_url_context(request.url)
         options = {
             "quiet": True,
             "no_warnings": True,
@@ -813,6 +852,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             if not entry_url:
                 continue
             entries.append({
+                "id": entry.get("id"),
                 "url": entry_url,
                 "title": _clean_entry_title(entry, entry_url),
                 "uploader": entry.get("uploader") or entry.get("channel") or "",
@@ -820,11 +860,17 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             })
         if not entries:
             raise HTTPException(status_code=400, detail="Nessun elemento scaricabile trovato")
+        selected_track = next(
+            (entry for entry in entries if entry.get("id") == url_context["selected_track_id"]),
+            None,
+        )
         return {
             "title": (info or {}).get("title") or entries[0]["title"],
             "entries": entries,
             "count": len(entries),
             "truncated": len(raw_entries) > settings.max_queued,
+            **url_context,
+            "selected_track": selected_track,
         }
 
     @app.get("/api/v1/downloads/{job_id}")
@@ -1051,4 +1097,3 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=f"Errore durante l'eliminazione: {str(e)}")
 
     return app
-
