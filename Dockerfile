@@ -45,24 +45,11 @@ WORKDIR /app
 COPY backend/requirements-web.txt backend/requirements-web.txt
 RUN pip install --no-cache-dir -r backend/requirements-web.txt
 
-COPY --chown=drops:drops \
-    backend/discogs_agent.py \
-    backend/bpm_analyzer.py \
-    backend/bpm_jobs.py \
-    backend/download_engine.py \
-    backend/media_core.py \
-    backend/r2_storage.py \
-    backend/run_web.py \
-    backend/spotify_agent.py \
-    backend/track_store.py \
-    backend/web_app.py \
-    backend/web_settings.py \
-    backend/web_store.py \
-    backend/
+COPY --chown=drops:drops backend/ backend/
 
 # Fail image build if runtime import graph is incomplete. Backend runs with
 # /app/backend on sys.path because run_web.py is executed as backend/run_web.py.
-RUN python -c "import sys; sys.path.insert(0, '/app/backend'); import web_app; import spotify_agent; import discogs_agent; import r2_storage; import track_store"
+RUN python -c "import sys; sys.path.insert(0, '/app/backend'); import web_app; import spotify_agent; import discogs_agent; import r2_storage; import r2_storage_async; import track_store; import academy_store; import bpm_analyzer_async"
 
 USER drops
 
