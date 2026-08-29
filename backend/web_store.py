@@ -120,6 +120,13 @@ class WebStore:
         with self.connect() as db:
             return db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
 
+    def list_jobs(self, owner: str, limit: int = 100):
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM jobs WHERE owner=? ORDER BY created_at DESC LIMIT ?",
+                (owner, limit),
+            ).fetchall()
+
     def active_count(self) -> int:
         with self.connect() as db:
             return db.execute(f"SELECT COUNT(*) FROM jobs WHERE status IN ({','.join('?' * len(ACTIVE_STATUSES))})", ACTIVE_STATUSES).fetchone()[0]

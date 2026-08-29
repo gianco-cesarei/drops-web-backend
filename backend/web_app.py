@@ -897,6 +897,15 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "selected_track": selected_track,
         }
 
+    @app.get("/api/v1/downloads")
+    def list_downloads(
+        limit: int = Query(100, ge=1, le=500),
+        owner: str = Depends(current_owner),
+    ):
+        """Returns all historical downloads for the authenticated user."""
+        rows = store.list_jobs(owner, limit=limit)
+        return {"downloads": [public_job(row) for row in rows]}
+
     @app.get("/api/v1/downloads/{job_id}")
     def get_download(job_id: str, owner: str = Depends(current_owner)):
         row = store.get_job(job_id, owner)
@@ -907,13 +916,26 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     @app.get("/api/v1/downloads/{job_id}/file")
     def get_file(job_id: str, owner: str = Depends(current_owner)):
         row = store.get_job(job_id, owner)
-        if not row or row["status"] != "ready" or not row["file_path"]:
-            raise HTTPException(status_code=404, detail="File not found")
-        path = Path(row["file_path"]).resolve()
-        expected_root = (jobs_dir / job_id).resolve()
-        if path.parent != expected_root or not path.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-        return FileResponse(path, filename=row["filename"], media_type="audio/mpeg")
+        if not row:
+            raise HTTPException(status_code=404, detail="Download not found")
+        # 1. Local file on disk
+        if row["file_path"]:
+            path = Path(row["file_path"]).resolve()
+            expected_root = (jobs_dir / job_id).resolve()
+            if path.parent == expected_root and path.is_file():
+                return FileResponse(path, filename=row["filename"] or f"{job_id}.mp3", media_type="audio/mpeg")
+        # 2. Cloudflare R2 backup
+        if row.get("r2_key") and r2_storage.is_configured():
+            try:
+                obj = r2_storage.get_object(row["r2_key"])
+                return StreamingResponse(
+                    obj["Body"],
+                    media_type="audio/mpeg",
+                    headers={"Content-Disposition": f'attachment; filename="{row["filename"] or f"{job_id}.mp3"}"'},
+                )
+            except Exception:
+                pass
+        raise HTTPException(status_code=404, detail="File temporaneo scaduto sul server. Rilancia il download dalla sorgente.")
 
     # --- Sezione 3 · Task 3.1/3.2: cloud library + private streaming --------
     @app.get("/api/tracks")
