@@ -9,6 +9,10 @@ without any network.
 
 from __future__ import annotations
 
+import r2_storage
+import web_app
+from bpm_analyzer import BpmAnalysisError
+
 
 def _presign(client, **overrides):
     payload = {
@@ -234,3 +238,96 @@ def test_stream_malformed_range_unit_falls_back_to_full(make_client, fake_r2):
     )
     assert resp.status_code == 200
     assert resp.content == content
+
+
+# --- analyze-bpm -------------------------------------------------------------
+#
+# The real onset/tempo DSP is covered by test_bpm_analyzer_precision.py; here
+# web_app.analyze_r2_object_bpm_async is monkeypatched (same pattern
+# conftest.fake_media uses for analyze_bpm) so these tests are about routing,
+# auth, status-gating and error-mapping, not the analyzer itself.
+
+
+def _fake_analyzer(monkeypatch, *, result=None, error=None):
+    async def fake(r2_key, *, suffix=".mp3", max_seconds=180.0):
+        if error is not None:
+            raise error
+        return result
+
+    monkeypatch.setattr(web_app, "analyze_r2_object_bpm_async", fake)
+
+
+def test_analyze_bpm_requires_auth(make_client, fake_r2):
+    client, app = make_client()
+    submission_id, _ = _ready_submission(app, fake_r2)
+    client.cookies.clear()
+    resp = client.post(f"/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    assert resp.status_code == 401
+
+
+def test_analyze_bpm_unknown_submission_404(make_client, fake_r2):
+    client, _ = make_client()
+    resp = client.post("/api/v1/academy/submissions/nonexistent/analyze-bpm")
+    assert resp.status_code == 404
+
+
+def test_analyze_bpm_another_owners_submission_404(make_client, fake_r2):
+    client, app = make_client()
+    submission_id, _ = _ready_submission(app, fake_r2, user_id="someone-else")
+    resp = client.post(f"/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    assert resp.status_code == 404
+
+
+def test_analyze_bpm_not_ready_returns_409(make_client, fake_r2):
+    client, _ = make_client()
+    presigned = _presign(client).json()
+    resp = client.post(f"/api/v1/academy/submissions/{presigned['submission_id']}/analyze-bpm")
+    assert resp.status_code == 409
+
+
+def test_analyze_bpm_503_when_r2_not_configured(make_client, fake_r2, monkeypatch):
+    client, app = make_client()
+    submission_id, _ = _ready_submission(app, fake_r2)
+    monkeypatch.setattr(r2_storage, "is_configured", lambda: False)
+    resp = client.post(f"/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    assert resp.status_code == 503
+
+
+def test_analyze_bpm_success_updates_row(make_client, fake_r2, monkeypatch):
+    client, app = make_client()
+    submission_id, _ = _ready_submission(app, fake_r2)
+    _fake_analyzer(
+        monkeypatch,
+        result={"bpm": 128.41, "bpm_confidence": 0.97, "bpm_source": "drops-local-rhythm-v1"},
+    )
+    resp = client.post(f"/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["bpm"] == 128.41
+    assert body["bpm_confidence"] == 0.97
+    assert body["bpm_source"] == "drops-local-rhythm-v1"
+    assert app.state.academy.get(submission_id)["bpm"] == 128.41
+
+
+def test_analyze_bpm_analysis_failure_returns_422(make_client, fake_r2, monkeypatch):
+    client, app = make_client()
+    submission_id, _ = _ready_submission(app, fake_r2)
+    _fake_analyzer(monkeypatch, error=BpmAnalysisError("Ritmo non rilevabile"))
+    resp = client.post(f"/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    assert resp.status_code == 422
+
+
+def test_analyze_bpm_missing_object_returns_404(make_client, fake_r2, monkeypatch):
+    client, app = make_client()
+    submission_id, _ = _ready_submission(app, fake_r2)
+    _fake_analyzer(monkeypatch, error=r2_storage.R2NotFoundError("object not found"))
+    resp = client.post(f"/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    assert resp.status_code == 404
+
+
+def test_analyze_bpm_r2_error_returns_502(make_client, fake_r2, monkeypatch):
+    client, app = make_client()
+    submission_id, _ = _ready_submission(app, fake_r2)
+    _fake_analyzer(monkeypatch, error=r2_storage.R2Error("network blip"))
+    resp = client.post(f"/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    assert resp.status_code == 502

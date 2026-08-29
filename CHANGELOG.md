@@ -10,6 +10,7 @@
   `POST /api/v1/academy/submissions/{id}/complete` (HEAD-verifies the upload actually landed before marking it ready),
   `GET /api/v1/academy/submissions` (owner-scoped list).
 - `GET /api/v1/academy/submissions/{id}/stream`: Range-aware audio proxy (206 Partial Content / 416 Range Not Satisfiable) for the DJ Lab preview deck and the global Mini-Player, backed by new `r2_storage.get_object`/`head_object`/`generate_presigned_post` helpers and `R2NotFoundError`/`R2InvalidRangeError`.
+- `POST /api/v1/academy/submissions/{id}/analyze-bpm`: downloads the submission's audio from R2 and runs the existing onset/tempo analyzer (`bpm_analyzer.py`, FFmpeg + NumPy autocorrelation - no new librosa/aubio dependency) on it, overwriting the row's `bpm`/`bpm_confidence`/`bpm_source`. New `bpm_analyzer_async.py` (asyncio.to_thread wrapper + R2 download orchestration) and `r2_storage_async.download_file_async`. 22 new tests, including precision tests against synthetic click-track WAV/MP3 fixtures at known tempos (`tests/test_bpm_analyzer_precision.py`).
 
 ## [0.1.0] - 2026-08-23
 

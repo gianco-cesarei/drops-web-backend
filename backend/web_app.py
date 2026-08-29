@@ -21,7 +21,8 @@ from pydantic import BaseModel
 
 import urllib.request
 import urllib.parse
-from bpm_analyzer import analyze_bpm
+from bpm_analyzer import BpmAnalysisError, analyze_bpm
+from bpm_analyzer_async import analyze_r2_object_bpm_async
 from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
 from media_core import is_supported_url, resolve_track, safe_filename, tag_audio_file, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_proxy
 from spotify_agent import SpotifyAgentError, WebSpotifyClient
@@ -1250,5 +1251,39 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if range_header and not range_header.startswith("bytes="):
             range_header = None
         return _stream_academy_object(submission, range_header)
+
+    _ACADEMY_CONTENT_TYPE_SUFFIX = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/mpeg": ".mp3"}
+
+    @app.post("/api/v1/academy/submissions/{submission_id}/analyze-bpm")
+    async def academy_analyze_bpm(
+        submission_id: str, owner: str = Depends(current_owner), _: None = Depends(require_csrf_origin),
+    ):
+        """Downloads the submission's audio from R2 and runs the local
+        onset/tempo BPM analyzer (bpm_analyzer.py) on it, overwriting the
+        row's bpm/bpm_confidence with the measured value - the automatic
+        counterpart to the bpm the student self-reports in the submission
+        form."""
+        submission = academy.get(submission_id)
+        if not submission or submission["user_id"] != owner:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        if submission["status"] != ACADEMY_STATUS_READY:
+            raise HTTPException(status_code=409, detail="Submission upload not complete yet")
+        if not r2_storage.is_configured():
+            raise HTTPException(status_code=503, detail="Cloud storage not configured")
+        suffix = _ACADEMY_CONTENT_TYPE_SUFFIX.get(submission["content_type"], ".mp3")
+        try:
+            result = await analyze_r2_object_bpm_async(submission["r2_key"], suffix=suffix)
+        except r2_storage.R2NotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Audio file not found on storage") from exc
+        except r2_storage.R2Error as exc:
+            logger.warning("academy bpm download failed submission_id=%s detail=%r", submission_id, str(exc)[:120])
+            raise HTTPException(status_code=502, detail="Could not fetch audio for analysis") from exc
+        except BpmAnalysisError as exc:
+            logger.info("academy bpm analysis failed submission_id=%s detail=%r", submission_id, str(exc)[:150])
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return academy.update_bpm(
+            submission_id, bpm=result["bpm"],
+            bpm_confidence=result.get("bpm_confidence"), bpm_source=result.get("bpm_source"),
+        )
 
     return app

@@ -36,6 +36,8 @@ from dataclasses import dataclass
 
 from r2_storage import (  # noqa: F401 - re-exported for callers that only import this module
     R2Error,
+    R2NotFoundError,
+    _client_error_code,
     _endpoint_url,
     bucket_name,
     build_object_key,
@@ -100,6 +102,29 @@ async def upload_file_async(local_path: str, key: str, *, content_type: str = "a
         raise R2Error(f"upload failed: {type(exc).__name__}") from exc
     logger.info("r2 async upload ok key=%s", key)
     return key
+
+
+async def download_file_async(key: str, local_path: str) -> str:
+    """Download ``key`` from R2 to ``local_path``. Returns ``local_path``.
+
+    The counterpart to ``upload_file_async`` - added for the BPM analyzer
+    (bpm_analyzer_async.py), which needs the Academy submission's bytes on
+    disk before it can shell out to ffmpeg. Raises R2NotFoundError if the key
+    doesn't exist, R2Error for anything else.
+    """
+    if not is_configured():
+        raise R2Error("R2 not configured")
+    try:
+        async with _client_ctx() as client:
+            await client.download_file(Bucket=bucket_name(), Key=key, Filename=local_path)
+    except R2Error:
+        raise
+    except Exception as exc:
+        code = _client_error_code(exc)
+        if code in ("404", "NoSuchKey", "NotFound"):
+            raise R2NotFoundError(f"object not found: {key}") from exc
+        raise R2Error(f"download failed: {type(exc).__name__}") from exc
+    return local_path
 
 
 async def generate_presigned_url_async(key: str, *, expires_in: int | None = None) -> str:

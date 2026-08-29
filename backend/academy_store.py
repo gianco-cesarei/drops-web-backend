@@ -46,6 +46,8 @@ class Submission(Base):
     user_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     bpm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bpm_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bpm_source: Mapped[str | None] = mapped_column(Text, nullable=True)
     genre: Mapped[str | None] = mapped_column(Text, nullable=True)
     focus_area: Mapped[str | None] = mapped_column(Text, nullable=True)
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -61,6 +63,8 @@ class Submission(Base):
             "user_id": self.user_id,
             "title": self.title,
             "bpm": self.bpm,
+            "bpm_confidence": self.bpm_confidence,
+            "bpm_source": self.bpm_source,
             "genre": self.genre,
             "focus_area": self.focus_area,
             "filename": self.filename,
@@ -143,6 +147,22 @@ class AcademyStore:
                 return None
             row.status = STATUS_READY
             row.size_bytes = size_bytes
+            session.commit()
+            session.refresh(row)
+            return row.public()
+
+    def update_bpm(
+        self, submission_id: str, *, bpm: float, bpm_confidence: float | None = None, bpm_source: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Overwrite the row's BPM with an automatically analyzed value,
+        replacing whatever the student self-reported at submission time."""
+        with Session(self.engine) as session:
+            row = session.get(Submission, submission_id)
+            if row is None:
+                return None
+            row.bpm = bpm
+            row.bpm_confidence = bpm_confidence
+            row.bpm_source = bpm_source
             session.commit()
             session.refresh(row)
             return row.public()
