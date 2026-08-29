@@ -16,7 +16,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 import urllib.request
@@ -30,6 +30,7 @@ from bpm_jobs import BpmJobManager
 from web_settings import WebSettings
 from web_store import WebStore
 from track_store import TrackStore
+from academy_store import AcademyStore, STATUS_READY as ACADEMY_STATUS_READY
 import r2_storage
 from media_core import is_youtube_url
 
@@ -78,6 +79,22 @@ class BpmComputeRequest(BaseModel):
     title: str
     isrc: str | None = None
     source_url: str | None = None
+
+
+# Academy feedback-track submissions accept the same WAV/MP3 mime types the
+# frontend's file picker already validates client-side (AcademyHub.tsx) - the
+# backend re-checks it since the client-side check is only a UX nicety.
+ACADEMY_ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/x-wav", "audio/mpeg"}
+
+
+class AcademySubmissionPresignRequest(BaseModel):
+    filename: str
+    content_type: str
+    size_bytes: int
+    title: str | None = None
+    bpm: float | None = None
+    genre: str | None = None
+    focus_area: str | None = None
 
 
 def _youtube_url_context(value: str) -> dict[str, str | None]:
@@ -150,6 +167,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     store = WebStore(settings.state_dir / "web.sqlite3")
     # Durable cloud catalog (Supabase Postgres in prod, SQLite fallback in dev).
     tracks = TrackStore(settings.state_dir, settings.database_url)
+    academy = AcademyStore(settings.state_dir, settings.database_url)
     discogs = DiscogsClient(settings.state_dir)
     spotify = WebSpotifyClient(settings.state_dir, discogs=discogs)
     bpm_jobs = BpmJobManager(settings.state_dir, max_workers=min(2, settings.max_concurrent))
@@ -205,6 +223,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = store
     app.state.tracks = tracks
+    app.state.academy = academy
     app.state.discogs = discogs
     app.state.executor = None
 
@@ -212,8 +231,12 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=list(settings.allowed_origins),
         allow_credentials=True,
-        allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        # HEAD added for the Academy streaming endpoint's range-probe request;
+        # Range/Content-Range so the DJ Lab deck and the global Mini-Player can
+        # seek via fetch() across origins and read those response headers.
+        allow_methods=["GET", "POST", "HEAD"],
+        allow_headers=["Content-Type", "Range"],
+        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
     )
 
     def require_csrf_origin(request: Request) -> None:
@@ -1095,5 +1118,137 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         except Exception as e:
             logger.error("Failed to delete article id=%s detail=%r", article_id, str(e))
             raise HTTPException(status_code=500, detail=f"Errore durante l'eliminazione: {str(e)}")
+
+    # --- Academy: feedback-track submissions (R2-backed) -------------------
+
+    @app.post("/api/v1/academy/submissions/presign")
+    def academy_presign_upload(
+        request: AcademySubmissionPresignRequest,
+        owner: str = Depends(current_owner),
+        _: None = Depends(require_csrf_origin),
+    ):
+        """Mint a presigned POST so the browser uploads the track straight to
+        R2 (never through this backend), capped at academy_max_upload_bytes
+        via R2's own content-length-range policy condition."""
+        if not r2_storage.is_configured():
+            raise HTTPException(status_code=503, detail="Cloud storage not configured")
+        if request.content_type not in ACADEMY_ALLOWED_CONTENT_TYPES:
+            raise HTTPException(status_code=400, detail="Formato non supportato. Usa WAV o MP3.")
+        if request.size_bytes <= 0 or request.size_bytes > settings.academy_max_upload_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File troppo grande. Limite: {settings.academy_max_upload_bytes // (1024 * 1024)} MB.",
+            )
+        submission_id = str(uuid.uuid4())
+        key = r2_storage.build_academy_object_key(owner, submission_id, request.filename)
+        try:
+            post = r2_storage.generate_presigned_post(
+                key, content_type=request.content_type, max_bytes=settings.academy_max_upload_bytes,
+            )
+        except r2_storage.R2Error as exc:
+            logger.warning("academy presign failed owner=%s detail=%r", owner, str(exc)[:120])
+            raise HTTPException(status_code=502, detail="Could not prepare upload") from exc
+        academy.create_pending(
+            user_id=owner, r2_key=key, content_type=request.content_type,
+            title=request.title, bpm=request.bpm, genre=request.genre,
+            focus_area=request.focus_area, filename=request.filename,
+            submission_id=submission_id,
+        )
+        return {
+            "submission_id": submission_id,
+            "upload_url": post["url"],
+            "upload_fields": post["fields"],
+            "key": key,
+            "max_bytes": settings.academy_max_upload_bytes,
+        }
+
+    @app.post("/api/v1/academy/submissions/{submission_id}/complete")
+    def academy_complete_upload(
+        submission_id: str, owner: str = Depends(current_owner), _: None = Depends(require_csrf_origin),
+    ):
+        """Called after the browser's direct-to-R2 POST succeeds. Verifies the
+        object actually landed (HEAD) before trusting the client and flipping
+        the row to ready - a forged call with no real upload just 409s."""
+        submission = academy.get(submission_id)
+        if not submission or submission["user_id"] != owner:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        if submission["status"] == ACADEMY_STATUS_READY:
+            return submission
+        try:
+            meta = r2_storage.head_object(submission["r2_key"])
+        except r2_storage.R2NotFoundError:
+            raise HTTPException(status_code=409, detail="Upload not found yet on storage, retry after it finishes")
+        except r2_storage.R2Error as exc:
+            raise HTTPException(status_code=502, detail="Could not verify upload") from exc
+        actual_size = int(meta.get("ContentLength") or 0)
+        if actual_size <= 0 or actual_size > settings.academy_max_upload_bytes:
+            r2_storage.delete_object(submission["r2_key"])
+            raise HTTPException(status_code=400, detail="Uploaded file failed size validation")
+        updated = academy.mark_ready(submission_id, size_bytes=actual_size)
+        return updated
+
+    @app.get("/api/v1/academy/submissions")
+    def academy_list_submissions(
+        limit: int = Query(200, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        owner: str = Depends(current_owner),
+    ):
+        return {"submissions": academy.list_for_user(owner, limit=limit, offset=offset)}
+
+    def _stream_academy_object(submission: dict, range_header: str | None):
+        try:
+            obj = r2_storage.get_object(submission["r2_key"], range_header=range_header)
+        except r2_storage.R2InvalidRangeError as exc:
+            headers = {"Content-Range": f"bytes */{exc.total_size}"} if exc.total_size is not None else {}
+            raise HTTPException(status_code=416, detail="Range not satisfiable", headers=headers) from exc
+        except r2_storage.R2NotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Track not found") from exc
+        except r2_storage.R2Error as exc:
+            raise HTTPException(status_code=502, detail="Could not stream track") from exc
+
+        def iter_body(body, chunk_size: int = 64 * 1024):
+            try:
+                while True:
+                    chunk = body.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                body.close()
+
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(obj["ContentLength"]),
+        }
+        content_range = obj.get("ContentRange")
+        status_code = 200
+        if content_range:
+            headers["Content-Range"] = content_range
+            status_code = 206
+        return StreamingResponse(
+            iter_body(obj["Body"]),
+            status_code=status_code,
+            media_type=submission["content_type"] or obj.get("ContentType") or "application/octet-stream",
+            headers=headers,
+        )
+
+    @app.get("/api/v1/academy/submissions/{submission_id}/stream")
+    def academy_stream_submission(
+        submission_id: str, request: Request, owner: str = Depends(current_owner),
+    ):
+        """Range-aware audio proxy for the Academy submission player (DJ Lab
+        preview deck and the global Mini-Player). Unlike /api/stream (personal
+        library, redirected to a presigned R2 GET url) this streams the bytes
+        through the backend, so seeking works via ordinary same-origin Range
+        requests without needing R2 bucket-level CORS configured."""
+        submission = academy.get(submission_id)
+        if not submission or submission["user_id"] != owner:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        if submission["status"] != ACADEMY_STATUS_READY:
+            raise HTTPException(status_code=409, detail="Submission upload not complete yet")
+        range_header = request.headers.get("range")
+        if range_header and not range_header.startswith("bytes="):
+            range_header = None
+        return _stream_academy_object(submission, range_header)
 
     return app

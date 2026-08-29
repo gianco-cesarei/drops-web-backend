@@ -28,6 +28,7 @@ import os
 import re
 import threading
 import unicodedata
+from pathlib import Path
 
 logger = logging.getLogger("drops.r2")
 
@@ -120,6 +121,22 @@ def build_object_key(user_id: str, genre: str | None, artist: str | None, title:
     return f"{user_seg}/{genre_seg}/{artist_seg} - {title_seg}.mp3"
 
 
+def build_academy_object_key(user_id: str, submission_id: str, filename: str | None) -> str:
+    """Compose the R2 object key for an Academy feedback-track submission:
+    ``academy/{user_id}/{submission_id}/{safe filename}``.
+
+    ``submission_id`` is a server-generated uuid (not user input), so it is
+    used verbatim as the key segment - it never needs slugging. The original
+    filename is still slugged since it comes straight from the browser.
+    """
+    stem = Path(filename or "").stem
+    suffix = Path(filename or "").suffix.lower()
+    if suffix not in (".mp3", ".wav"):
+        suffix = ".mp3"
+    name_seg = _slug_segment(stem, "track")
+    return f"academy/{_slug_segment(user_id, 'user')}/{submission_id}/{name_seg}{suffix}"
+
+
 # --- client -----------------------------------------------------------------
 
 # boto3 clients are thread-safe for calls but we build lazily and cache one so
@@ -154,6 +171,30 @@ def _get_client():
 
 class R2Error(RuntimeError):
     """Raised when an R2 operation fails while R2 is configured."""
+
+
+class R2NotFoundError(R2Error):
+    """The requested object does not exist in the bucket."""
+
+
+class R2InvalidRangeError(R2Error):
+    """The Range header could not be satisfied against the object's size.
+
+    ``total_size`` is populated on a best-effort basis (a HEAD lookup) so the
+    caller can build a correct ``Content-Range: bytes */{total}`` 416 response;
+    it is ``None`` when even that lookup fails.
+    """
+
+    def __init__(self, message: str, total_size: int | None = None):
+        super().__init__(message)
+        self.total_size = total_size
+
+
+def _client_error_code(exc: Exception) -> str | None:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return None
+    return response.get("Error", {}).get("Code")
 
 
 def upload_file(local_path: str, key: str, *, content_type: str = "audio/mpeg") -> str:
@@ -193,6 +234,97 @@ def generate_presigned_url(key: str, *, expires_in: int | None = None) -> str:
         )
     except Exception as exc:
         raise R2Error(f"presign failed: {type(exc).__name__}") from exc
+
+
+def generate_presigned_post(
+    key: str, *, content_type: str, max_bytes: int, expires_in: int | None = None
+) -> dict:
+    """Return a presigned POST policy for a direct browser -> R2 upload.
+
+    Unlike a presigned PUT url, a presigned POST carries a signed *policy*
+    (returned as ``fields`` alongside ``url``), so R2 itself enforces the
+    ``content-length-range`` condition - a client can't just edit a header and
+    push more than ``max_bytes``. This is how the Academy submission flow
+    caps uploads at 100MB without ever routing the audio bytes through this
+    backend.
+
+    Returns ``{"url": ..., "fields": {...}}``; the caller (browser) POSTs a
+    multipart form to ``url`` with every entry in ``fields`` plus the file
+    itself as the ``file`` field, in that order.
+    """
+    if not is_configured():
+        raise R2Error("R2 not configured")
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    ttl = expires_in if expires_in is not None else presign_ttl_seconds()
+    ttl = max(60, min(ttl, 7 * 24 * 3600))
+    client = _get_client()
+    try:
+        return client.generate_presigned_post(
+            Bucket=bucket_name(),
+            Key=key,
+            Fields={"Content-Type": content_type},
+            Conditions=[
+                {"Content-Type": content_type},
+                ["content-length-range", 1, max_bytes],
+            ],
+            ExpiresIn=ttl,
+        )
+    except Exception as exc:
+        raise R2Error(f"presign post failed: {type(exc).__name__}") from exc
+
+
+def head_object(key: str) -> dict:
+    """Return R2's HEAD metadata (ContentLength, ContentType, ...) for ``key``.
+
+    Raises R2NotFoundError if the object does not exist, R2Error on any other
+    failure. Used to confirm a browser->R2 direct upload actually landed
+    before trusting the client's "I'm done" call.
+    """
+    if not is_configured():
+        raise R2Error("R2 not configured")
+    client = _get_client()
+    try:
+        return client.head_object(Bucket=bucket_name(), Key=key)
+    except Exception as exc:
+        code = _client_error_code(exc)
+        if code in ("404", "NoSuchKey", "NotFound"):
+            raise R2NotFoundError(f"object not found: {key}") from exc
+        raise R2Error(f"head failed: {type(exc).__name__}") from exc
+
+
+def get_object(key: str, *, range_header: str | None = None) -> dict:
+    """GET ``key``, optionally scoped to ``range_header`` (an RFC 7233 value
+    like ``bytes=0-1023``, forwarded to R2 as-is).
+
+    Returns the raw boto3 response dict: ``Body`` is a streaming file-like
+    object the caller reads in chunks, plus ``ContentLength``, ``ContentType``
+    and (when a range was requested and satisfiable) ``ContentRange``.
+
+    Raises R2NotFoundError (no such key), R2InvalidRangeError (range outside
+    the object's bounds - ``total_size`` set when a HEAD fallback succeeds),
+    or R2Error for anything else.
+    """
+    if not is_configured():
+        raise R2Error("R2 not configured")
+    client = _get_client()
+    kwargs = {"Bucket": bucket_name(), "Key": key}
+    if range_header:
+        kwargs["Range"] = range_header
+    try:
+        return client.get_object(**kwargs)
+    except Exception as exc:
+        code = _client_error_code(exc)
+        if code in ("404", "NoSuchKey", "NotFound"):
+            raise R2NotFoundError(f"object not found: {key}") from exc
+        if code in ("InvalidRange", "416"):
+            total_size = None
+            try:
+                total_size = head_object(key).get("ContentLength")
+            except R2Error:
+                pass
+            raise R2InvalidRangeError(f"range not satisfiable: {range_header}", total_size=total_size) from exc
+        raise R2Error(f"get failed: {type(exc).__name__}") from exc
 
 
 def delete_object(key: str) -> None:

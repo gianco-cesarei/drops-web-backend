@@ -29,6 +29,7 @@ class WebSettings:
     max_concurrent: int
     max_duration_seconds: int
     max_file_bytes: int
+    academy_max_upload_bytes: int
     login_rate_limit: int
     login_rate_window_seconds: int
     environment: str = "production"
@@ -85,6 +86,11 @@ class WebSettings:
             max_concurrent=_positive_int("DROPS_WEB_MAX_CONCURRENT", 2),
             max_duration_seconds=_positive_int("DROPS_WEB_MAX_DURATION_SECONDS", 900),
             max_file_bytes=_positive_int("DROPS_WEB_MAX_FILE_BYTES", 100_000_000),
+            # Separate cap from max_file_bytes on purpose: that one bounds
+            # yt-dlp downloads, this one bounds Academy feedback-track direct
+            # uploads (Sezione: DJ Lab / Academy). Same 100MB default, but the
+            # two are independently tunable.
+            academy_max_upload_bytes=_positive_int("DROPS_ACADEMY_MAX_UPLOAD_BYTES", 100_000_000),
             login_rate_limit=_positive_int("DROPS_WEB_LOGIN_RATE_LIMIT", 5),
             login_rate_window_seconds=_positive_int("DROPS_WEB_LOGIN_RATE_WINDOW_SECONDS", 60),
             environment=os.environ.get("DROPS_WEB_ENV", "production").strip().lower(),

@@ -111,24 +111,83 @@ def fake_media(monkeypatch):
 
 @pytest.fixture
 def fake_r2(monkeypatch):
-    """Patch r2_storage as if R2 were configured, without any network."""
+    """Patch r2_storage as if R2 were configured, without any network.
+
+    ``objects`` simulates what's actually sitting in the bucket - keyed by R2
+    object key, valued by its raw bytes. ``upload_file`` (the sync single-track
+    path) populates it automatically; the Academy presign flow doesn't (the
+    browser uploads directly to R2, bypassing this backend), so tests for that
+    flow seed ``objects[key] = b"..."`` themselves to simulate "the direct
+    upload landed" before calling the complete/stream endpoints.
+    """
+    import io
+    import re
+
     import r2_storage
 
     uploaded: list[str] = []
+    objects: dict[str, bytes] = {}
 
     monkeypatch.setattr(r2_storage, "is_configured", lambda: True)
     monkeypatch.setattr(r2_storage, "presign_ttl_seconds", lambda: 3600)
 
     def fake_upload(local_path, key, *, content_type="audio/mpeg"):
         uploaded.append(key)
+        objects[key] = b"fake-audio-bytes"
         return key
 
     def fake_presign(key, *, expires_in=None):
         return f"https://r2.example/{key}?sig=deadbeef&exp={expires_in or 3600}"
 
+    def fake_presigned_post(key, *, content_type, max_bytes, expires_in=None):
+        return {
+            "url": "https://r2.example/upload",
+            "fields": {"key": key, "Content-Type": content_type, "policy": "fake-policy"},
+        }
+
+    def fake_head_object(key):
+        if key not in objects:
+            raise r2_storage.R2NotFoundError(f"object not found: {key}")
+        return {"ContentLength": len(objects[key]), "ContentType": "audio/mpeg"}
+
+    _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+    def fake_get_object(key, *, range_header=None):
+        if key not in objects:
+            raise r2_storage.R2NotFoundError(f"object not found: {key}")
+        data = objects[key]
+        total = len(data)
+        if not range_header:
+            return {"Body": io.BytesIO(data), "ContentLength": total, "ContentType": "audio/mpeg"}
+        match = _RANGE_RE.match(range_header)
+        if not match or not (match.group(1) or match.group(2)):
+            raise r2_storage.R2InvalidRangeError(f"bad range: {range_header}", total_size=total)
+        start_s, end_s = match.groups()
+        if start_s:
+            start, end = int(start_s), (int(end_s) if end_s else total - 1)
+        else:
+            start, end = max(0, total - int(end_s)), total - 1
+        if start >= total or start > end:
+            raise r2_storage.R2InvalidRangeError(f"bad range: {range_header}", total_size=total)
+        end = min(end, total - 1)
+        chunk = data[start:end + 1]
+        return {
+            "Body": io.BytesIO(chunk),
+            "ContentLength": len(chunk),
+            "ContentType": "audio/mpeg",
+            "ContentRange": f"bytes {start}-{end}/{total}",
+        }
+
+    def fake_delete(key):
+        objects.pop(key, None)
+
     monkeypatch.setattr(r2_storage, "upload_file", fake_upload)
     monkeypatch.setattr(r2_storage, "generate_presigned_url", fake_presign)
-    return {"uploaded": uploaded}
+    monkeypatch.setattr(r2_storage, "generate_presigned_post", fake_presigned_post)
+    monkeypatch.setattr(r2_storage, "head_object", fake_head_object)
+    monkeypatch.setattr(r2_storage, "get_object", fake_get_object)
+    monkeypatch.setattr(r2_storage, "delete_object", fake_delete)
+    return {"uploaded": uploaded, "objects": objects}
 
 
 @pytest.fixture
