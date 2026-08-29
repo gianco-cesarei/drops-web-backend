@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Secrets / local env (see AGENTS.md §4 - never commit real secrets)
+.env
+cookies.txt
+
+# Local state (jobs dir, sqlite fallback db, etc.)
+/data/
+*.sqlite3
