@@ -49,7 +49,7 @@ COPY --chown=drops:drops backend/ backend/
 
 # Fail image build if runtime import graph is incomplete. Backend runs with
 # /app/backend on sys.path because run_web.py is executed as backend/run_web.py.
-RUN python -c "import sys; sys.path.insert(0, '/app/backend'); import web_app; import spotify_agent; import discogs_agent; import r2_storage; import r2_storage_async; import track_store; import academy_store; import bpm_analyzer_async"
+RUN python -c "import sys; sys.path.insert(0, '/app/backend'); import web_app; import spotify_agent; import discogs_agent; import r2_storage; import r2_storage_async; import track_store; import academy_store; import bpm_analyzer_async; import folder_store"
 
 USER drops
 

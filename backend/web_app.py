@@ -32,6 +32,7 @@ from web_settings import WebSettings
 from web_store import WebStore
 from track_store import TrackStore
 from academy_store import AcademyStore, STATUS_READY as ACADEMY_STATUS_READY
+from folder_store import FolderStore
 import r2_storage
 from media_core import is_youtube_url
 
@@ -96,6 +97,16 @@ class AcademySubmissionPresignRequest(BaseModel):
     bpm: float | None = None
     genre: str | None = None
     focus_area: str | None = None
+
+
+class FolderCreateRequest(BaseModel):
+    name: str
+    dominant_genre: str | None = None
+    track_ids: list[str] | None = None
+
+
+class FolderRenameRequest(BaseModel):
+    name: str
 
 
 def _youtube_url_context(value: str) -> dict[str, str | None]:
@@ -169,6 +180,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     # Durable cloud catalog (Supabase Postgres in prod, SQLite fallback in dev).
     tracks = TrackStore(settings.state_dir, settings.database_url)
     academy = AcademyStore(settings.state_dir, settings.database_url)
+    folders = FolderStore(settings.state_dir, settings.database_url)
     discogs = DiscogsClient(settings.state_dir)
     spotify = WebSpotifyClient(settings.state_dir, discogs=discogs)
     bpm_jobs = BpmJobManager(settings.state_dir, max_workers=min(2, settings.max_concurrent))
@@ -225,6 +237,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     app.state.store = store
     app.state.tracks = tracks
     app.state.academy = academy
+    app.state.folders = folders
     app.state.discogs = discogs
     app.state.executor = None
 
@@ -235,7 +248,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         # HEAD added for the Academy streaming endpoint's range-probe request;
         # Range/Content-Range so the DJ Lab deck and the global Mini-Player can
         # seek via fetch() across origins and read those response headers.
-        allow_methods=["GET", "POST", "HEAD"],
+        # PATCH/DELETE added for folder rename and delete.
+        allow_methods=["GET", "POST", "HEAD", "PATCH", "DELETE"],
         allow_headers=["Content-Type", "Range"],
         expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
     )
@@ -1307,5 +1321,55 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             submission_id, bpm=result["bpm"],
             bpm_confidence=result.get("bpm_confidence"), bpm_source=result.get("bpm_source"),
         )
+
+    # --- Folders (library crates) -------------------------------------------
+
+    @app.get("/api/v1/folders")
+    def list_folders(
+        limit: int = Query(200, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        owner: str = Depends(current_owner),
+    ):
+        return {"folders": folders.list_for_user(owner, limit=limit, offset=offset)}
+
+    @app.post("/api/v1/folders", status_code=201)
+    def create_folder(
+        request: FolderCreateRequest,
+        owner: str = Depends(current_owner),
+        _: None = Depends(require_csrf_origin),
+    ):
+        name = request.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Nome cartella richiesto")
+        return folders.create_folder(
+            user_id=owner, name=name, dominant_genre=request.dominant_genre,
+            track_ids=request.track_ids,
+        )
+
+    @app.patch("/api/v1/folders/{folder_id}")
+    def rename_folder(
+        folder_id: str,
+        request: FolderRenameRequest,
+        owner: str = Depends(current_owner),
+        _: None = Depends(require_csrf_origin),
+    ):
+        name = request.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Nome cartella richiesto")
+        updated = folders.rename(folder_id, user_id=owner, name=name)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Cartella non trovata")
+        return updated
+
+    @app.delete("/api/v1/folders/{folder_id}")
+    def delete_folder(
+        folder_id: str,
+        owner: str = Depends(current_owner),
+        _: None = Depends(require_csrf_origin),
+    ):
+        deleted = folders.delete(folder_id, user_id=owner)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Cartella non trovata")
+        return {"status": "deleted", "id": folder_id}
 
     return app
