@@ -944,7 +944,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Download not found")
         return public_job(row)
 
-    @app.get("/api/v1/downloads/{job_id}/file")
+    @app.api_route("/api/v1/downloads/{job_id}/file", methods=["GET", "HEAD"])
     def get_file(job_id: str, owner: str = Depends(current_owner)):
         row = store.get_job(job_id, owner)
         if not row:
