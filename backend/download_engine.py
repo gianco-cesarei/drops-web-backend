@@ -316,7 +316,13 @@ def _clear_job_dir(job_dir: Path) -> None:
 
 def _native_source_label(url: str) -> str:
     host = (urlsplit(url).hostname or "").lower()
-    return "soundcloud" if host == "soundcloud.com" or host.endswith(".soundcloud.com") else "youtube"
+    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
+        return "soundcloud"
+    if "bandcamp.com" in host:
+        return "bandcamp"
+    if "hearthis.at" in host:
+        return "hearthis"
+    return "youtube"
 
 
 def download_multi_source(

@@ -16,7 +16,7 @@ import yt_dlp
 logger = logging.getLogger("drops.media")
 
 
-ALLOWED_DOMAINS = ("youtube.com", "youtu.be", "soundcloud.com", "music.youtube.com")
+ALLOWED_DOMAINS = ("youtube.com", "youtu.be", "soundcloud.com", "music.youtube.com", "bandcamp.com", "hearthis.at")
 
 
 # Single-flight lock shared by the download worker and the BPM engine: only
