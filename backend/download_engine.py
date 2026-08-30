@@ -261,9 +261,11 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
 
     info = None
     last_extract_error: yt_dlp.utils.DownloadError | None = None
+    current_options = dict(options)
+
     for attempt in range(1, 4):
         try:
-            with YTDLP_LOCK, yt_dlp.YoutubeDL(options) as ydl:
+            with YTDLP_LOCK, yt_dlp.YoutubeDL(current_options) as ydl:
                 info = ydl.extract_info(url, download=True)
             break
         except yt_dlp.utils.DownloadError as exc:
@@ -271,11 +273,24 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
             for leftover in job_dir.iterdir():
                 if leftover.is_file():
                     leftover.unlink(missing_ok=True)
+            exc_str = str(exc).lower()
+            # Se il proxy è scaduto (402 Payment Required), non autenticato (407) o fallito (tunnel/proxy error),
+            # rimuovi immediatamente il proxy e riprova con connessione diretta!
+            if "proxy" in exc_str or "tunnel" in exc_str or "402" in exc_str or "407" in exc_str:
+                logger.warning("Proxy error detected (%r), dropping proxy for direct connection fallback", str(exc)[:150])
+                current_options.pop("proxy", None)
             if str(exc) in DOWNLOAD_ABORT_MESSAGES or attempt == 3:
+                # Se è l'ultimo tentativo ed era fallito con proxy, fai un ultimo tentativo disperato diretto
+                if "proxy" in current_options:
+                    try:
+                        current_options.pop("proxy", None)
+                        with YTDLP_LOCK, yt_dlp.YoutubeDL(current_options) as ydl:
+                            info = ydl.extract_info(url, download=True)
+                        break
+                    except Exception:
+                        pass
                 raise
-            # YouTube's bot-check is intermittent per player client/IP; a
-            # short retry often clears it without needing cookies.
-            logger.warning("download retrying attempt=%s", attempt)
+            logger.warning("download retrying attempt=%s error=%r", attempt, str(exc)[:150])
             time.sleep(1)
     if info is None:
         raise last_extract_error
