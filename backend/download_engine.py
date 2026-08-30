@@ -259,11 +259,25 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
     if proxy:
         options["proxy"] = proxy
 
+    CLIENT_TIERS = [
+        ["mweb", "android", "android_music", "ios_music", "ios"],
+        ["android", "ios"],
+        ["tv_embedded", "tv", "web_embedded"],
+        ["web_creator", "android_creator"],
+    ]
+
     info = None
     last_extract_error: yt_dlp.utils.DownloadError | None = None
     current_options = dict(options)
 
-    for attempt in range(1, 4):
+    for attempt in range(1, 5):
+        client_tier = CLIENT_TIERS[min(attempt - 1, len(CLIENT_TIERS) - 1)]
+        ext_args = dict(current_options.get("extractor_args") or {})
+        yt_args = dict(ext_args.get("youtube") or {})
+        yt_args["player_client"] = client_tier
+        ext_args["youtube"] = yt_args
+        current_options["extractor_args"] = ext_args
+
         try:
             with YTDLP_LOCK, yt_dlp.YoutubeDL(current_options) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -274,7 +288,7 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
                 if leftover.is_file():
                     leftover.unlink(missing_ok=True)
             exc_str = str(exc).lower()
-            # Se il proxy causa blocco bot, 403 Forbidden, 402 Payment Required, 407 o errore tunnel,
+            # Se il proxy causa blocco bot, 403 Forbidden, 402, 407 o errore tunnel,
             # rimuovi immediatamente il proxy e riprova con connessione diretta!
             if (
                 "proxy" in exc_str
@@ -289,7 +303,7 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
                 if "proxy" in current_options:
                     logger.warning("Proxy issue or bot-check detected (%r), dropping proxy for direct connection fallback", str(exc)[:150])
                     current_options.pop("proxy", None)
-            if str(exc) in DOWNLOAD_ABORT_MESSAGES or attempt == 3:
+            if str(exc) in DOWNLOAD_ABORT_MESSAGES or attempt == 4:
                 # Se è l'ultimo tentativo ed era fallito con proxy, fai un ultimo tentativo diretto
                 if "proxy" in current_options:
                     try:
@@ -300,7 +314,7 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
                     except Exception:
                         pass
                 raise
-            logger.warning("download retrying attempt=%s error=%r", attempt, str(exc)[:150])
+            logger.warning("download retrying attempt=%s client_tier=%s error=%r", attempt, client_tier, str(exc)[:150])
             time.sleep(1)
     if info is None:
         raise last_extract_error
@@ -335,7 +349,8 @@ def download_multi_source(
         except Exception as yt_exc:
             logger.warning("direct youtube download failed job_id=%s detail=%r, attempting resilient SoundCloud fallback", job_id, str(yt_exc)[:200])
             _clear_job_dir(job_dir)
-            match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
+            clean_artist = re.sub(r"\s*-\s*Topic\b", "", artist or "", flags=re.IGNORECASE).strip() or None
+            match_url = find_soundcloud_match(clean_artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
             if match_url:
                 try:
                     info = attempt_download(job_dir, match_url, quality, settings, started)
@@ -343,10 +358,11 @@ def download_multi_source(
                     return info, "soundcloud"
                 except Exception:
                     _clear_job_dir(job_dir)
-            query_str = f"{artist or ''} {title or raw_title or ''}".strip()
+            # Fallback a ricerca YouTube non-Topic (versioni label / visualizer / upload alternativi)
+            query_str = f"{clean_artist or ''} {title or raw_title or ''}".strip()
             if query_str:
                 try:
-                    info = attempt_download(job_dir, f"ytsearch1:{query_str}", quality, settings, started, proxy=proxy)
+                    info = attempt_download(job_dir, f"ytsearch3:{query_str}", quality, settings, started, proxy=None)
                     logger.info("download source fallback ytsearch riuscito job_id=%s", job_id)
                     return info, "youtube"
                 except Exception:
