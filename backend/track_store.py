@@ -85,15 +85,26 @@ class TrackStore:
         self.is_postgres = self.url.startswith("postgresql")
         engine_kwargs: dict[str, Any] = {"future": True}
         if self.is_postgres:
-            # Survive Supabase pooler dropping idle connections.
             engine_kwargs["pool_pre_ping"] = True
             engine_kwargs["pool_recycle"] = 1800
+            engine_kwargs["connect_args"] = {"connect_timeout": 5}
         else:
-            # A single SQLite file shared across the worker threadpool.
             engine_kwargs["connect_args"] = {"check_same_thread": False}
-        self.engine = create_engine(self.url, **engine_kwargs)
-        Base.metadata.create_all(self.engine)
-        logger.info("track store ready backend=%s", "postgres" if self.is_postgres else "sqlite")
+        try:
+            self.engine = create_engine(self.url, **engine_kwargs)
+            Base.metadata.create_all(self.engine)
+            logger.info("track store ready backend=%s", "postgres" if self.is_postgres else "sqlite")
+        except Exception as exc:
+            if self.is_postgres:
+                logger.warning("track store postgres connection failed (%s), falling back to sqlite", str(exc)[:200])
+                self.is_postgres = False
+                state_dir.mkdir(parents=True, exist_ok=True)
+                self.url = f"sqlite:///{state_dir / 'tracks.sqlite3'}"
+                self.engine = create_engine(self.url, connect_args={"check_same_thread": False}, future=True)
+                Base.metadata.create_all(self.engine)
+                logger.info("track store ready backend=sqlite (fallback)")
+            else:
+                raise exc
 
     def create_track(
         self,

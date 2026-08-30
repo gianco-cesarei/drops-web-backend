@@ -63,11 +63,23 @@ class FolderStore:
         if is_postgres:
             engine_kwargs["pool_pre_ping"] = True
             engine_kwargs["pool_recycle"] = 1800
+            engine_kwargs["connect_args"] = {"connect_timeout": 5}
         else:
             engine_kwargs["connect_args"] = {"check_same_thread": False}
-        self.engine = create_engine(self.url, **engine_kwargs)
-        Base.metadata.create_all(self.engine)
-        logger.info("folder store ready backend=%s", "postgres" if is_postgres else "sqlite")
+        try:
+            self.engine = create_engine(self.url, **engine_kwargs)
+            Base.metadata.create_all(self.engine)
+            logger.info("folder store ready backend=%s", "postgres" if is_postgres else "sqlite")
+        except Exception as exc:
+            if is_postgres:
+                logger.warning("folder store postgres connection failed (%s), falling back to sqlite", str(exc)[:200])
+                state_dir.mkdir(parents=True, exist_ok=True)
+                self.url = f"sqlite:///{state_dir / 'folders.sqlite3'}"
+                self.engine = create_engine(self.url, connect_args={"check_same_thread": False}, future=True)
+                Base.metadata.create_all(self.engine)
+                logger.info("folder store ready backend=sqlite (fallback)")
+            else:
+                raise exc
 
     def _public(self, session: Session, folder: Folder) -> dict[str, Any]:
         track_ids = list(
