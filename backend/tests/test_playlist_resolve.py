@@ -85,3 +85,15 @@ def test_youtu_be_track_in_playlist_is_detected():
         "selected_track_id": "JbySohLL3io",
         "selected_track_url": "https://www.youtube.com/watch?v=JbySohLL3io",
     }
+
+
+def test_youtube_mix_rd_treated_as_single_track():
+    context = web_app._youtube_url_context("https://www.youtube.com/watch?v=--mL1-6wxBQ&list=RDFfceP6BjHIM&index=4")
+
+    assert context == {
+        "url_type": "track",
+        "playlist_id": None,
+        "selected_track_id": "--mL1-6wxBQ",
+        "selected_track_url": "https://www.youtube.com/watch?v=--mL1-6wxBQ",
+    }
+

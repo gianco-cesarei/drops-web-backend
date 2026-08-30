@@ -128,7 +128,10 @@ def _youtube_url_context(value: str) -> dict[str, str | None]:
         selected_track_id = path_parts[0]
     if not selected_track_id and len(path_parts) >= 2 and path_parts[0] in {"shorts", "embed"}:
         selected_track_id = path_parts[1]
-    if playlist_id and selected_track_id:
+    if playlist_id and playlist_id.startswith("RD") and selected_track_id:
+        url_type = "track"
+        playlist_id = None
+    elif playlist_id and selected_track_id:
         url_type = "track_in_playlist"
     elif playlist_id:
         url_type = "playlist"
@@ -873,12 +876,24 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         proxy = ytdlp_proxy()
         if proxy:
             options["proxy"] = proxy
+        target_url = url_context.get("selected_track_url") if url_context.get("url_type") == "track" and url_context.get("selected_track_url") else request.url
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(request.url, download=False)
+                info = ydl.extract_info(target_url, download=False)
         except Exception as exc:
-            logger.warning("playlist resolve fallita error=%r", str(exc)[:200])
-            raise HTTPException(status_code=400, detail="Playlist non leggibile. Controlla link, privacy e disponibilita.") from exc
+            if url_context.get("selected_track_url") and target_url != url_context["selected_track_url"]:
+                try:
+                    fallback_url = url_context["selected_track_url"]
+                    with yt_dlp.YoutubeDL({**options, "extract_flat": False, "noplaylist": True}) as ydl:
+                        info = ydl.extract_info(fallback_url, download=False)
+                    url_context["url_type"] = "track"
+                    url_context["playlist_id"] = None
+                except Exception:
+                    logger.warning("playlist resolve fallita error=%r", str(exc)[:200])
+                    raise HTTPException(status_code=400, detail="Playlist non leggibile. Controlla link, privacy e disponibilita.") from exc
+            else:
+                logger.warning("playlist resolve fallita error=%r", str(exc)[:200])
+                raise HTTPException(status_code=400, detail="Playlist non leggibile. Controlla link, privacy e disponibilita.") from exc
         raw_entries = list((info or {}).get("entries") or [])
         if not raw_entries:
             raw_entries = [info or {}]
