@@ -790,7 +790,11 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if request.quality not in AUDIO_QUALITY:
             raise HTTPException(status_code=400, detail="Invalid quality")
         job_id = str(uuid.uuid4())
-        recognized = resolve_track(request.url)
+        try:
+            recognized = resolve_track(request.url)
+        except Exception as e:
+            logger.warning("resolve_track failed for %s: %s", request.url, e)
+            recognized = {}
         accepted = store.create_job_if_capacity(
             job_id,
             owner,
@@ -879,33 +883,30 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if proxy:
             options["proxy"] = proxy
         target_url = url_context.get("selected_track_url") if url_context.get("url_type") == "track" and url_context.get("selected_track_url") else request.url
+        info = None
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(target_url, download=False)
         except Exception as exc:
-            exc_str = str(exc).lower()
-            if "proxy" in options and ("proxy" in exc_str or "tunnel" in exc_str or "402" in exc_str or "407" in exc_str):
-                logger.warning("Proxy failed during playlist resolve (%r), retrying direct without proxy", str(exc)[:150])
-                direct_opts = {k: v for k, v in options.items() if k != "proxy"}
-                try:
-                    with yt_dlp.YoutubeDL(direct_opts) as ydl:
-                        info = ydl.extract_info(target_url, download=False)
-                except Exception as direct_exc:
-                    exc = direct_exc
-            if "info" not in locals() or info is None:
+            logger.warning("Playlist resolve initial attempt error=%r, retrying direct without proxy", str(exc)[:150])
+            direct_opts = {k: v for k, v in options.items() if k != "proxy"}
+            try:
+                with yt_dlp.YoutubeDL(direct_opts) as ydl:
+                    info = ydl.extract_info(target_url, download=False)
+            except Exception as direct_exc:
                 if url_context.get("selected_track_url") and target_url != url_context["selected_track_url"]:
                     try:
                         fallback_url = url_context["selected_track_url"]
-                        with yt_dlp.YoutubeDL({**options, "proxy": None, "extract_flat": False, "noplaylist": True}) as ydl:
+                        with yt_dlp.YoutubeDL({**direct_opts, "extract_flat": False, "noplaylist": True}) as ydl:
                             info = ydl.extract_info(fallback_url, download=False)
                         url_context["url_type"] = "track"
                         url_context["playlist_id"] = None
                     except Exception:
-                        logger.warning("playlist resolve fallita error=%r", str(exc)[:200])
-                        raise HTTPException(status_code=400, detail="Playlist non leggibile. Controlla link, privacy e disponibilita.") from exc
+                        logger.warning("playlist resolve direct fallback failed error=%r", str(direct_exc)[:200])
+                        raise HTTPException(status_code=400, detail="Playlist non leggibile. Controlla link, privacy e disponibilita.") from direct_exc
                 else:
-                    logger.warning("playlist resolve fallita error=%r", str(exc)[:200])
-                    raise HTTPException(status_code=400, detail="Playlist non leggibile. Controlla link, privacy e disponibilita.") from exc
+                    logger.warning("playlist resolve direct attempt failed error=%r", str(direct_exc)[:200])
+                    raise HTTPException(status_code=400, detail="Playlist non leggibile. Controlla link, privacy e disponibilita.") from direct_exc
         raw_entries = list((info or {}).get("entries") or [])
         if not raw_entries:
             raw_entries = [info or {}]

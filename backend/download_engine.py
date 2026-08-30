@@ -249,6 +249,7 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         "max_filesize": settings.max_file_bytes,
         "match_filter": duration_filter,
         "socket_timeout": 15,
+        "nocheckcertificate": True,
         "concurrent_fragment_downloads": 4,
         "progress_hooks": [progress],
         "extractor_args": ytdlp_extractor_args(),

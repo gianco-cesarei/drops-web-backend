@@ -33,13 +33,12 @@ def ytdlp_extractor_args() -> dict:
     """youtube player clients to try, shared by download and BPM (same engine).
 
     Render's datacenter IPs trip YouTube's "Sign in to confirm you're not a
-    bot" check on the default web client; android/ios/mweb clients with
-    player_skip skip the web player wall entirely.
+    bot" check on the default web client; android/ios/mweb clients
+    provide mobile API streams without the desktop web wall.
     """
     args: dict = {
         "youtube": {
             "player_client": list(YTDLP_PLAYER_CLIENTS),
-            "player_skip": ["webpage", "configs"],
         }
     }
     args.update(_pot_provider_extractor_args())
