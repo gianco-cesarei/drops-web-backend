@@ -85,31 +85,43 @@ def ytdlp_cookiefile() -> str | None:
 
     Render's datacenter IPs get YouTube's "Sign in to confirm you're not a bot"
     bot-check; a browser-exported cookies file is yt-dlp's documented workaround.
-    Supports BOTH a filesystem path (Render Secret File) AND raw Netscape cookie text.
+    Supports:
+    1. DROPS_YTDLP_COOKIES env var (file path or raw Netscape cookie text)
+    2. Auto-discovery of Render Secret Files in /etc/secrets/ (cookies.txt, etc.)
     """
-    value = os.environ.get("DROPS_YTDLP_COOKIES", "").strip()
-    if not value:
-        return None
-    # 1. If it is an existing file on disk:
-    if os.path.isfile(value):
+    candidates: list[str] = []
+    env_val = os.environ.get("DROPS_YTDLP_COOKIES", "").strip()
+    if env_val:
+        if os.path.isfile(env_val):
+            candidates.append(env_val)
+        elif "# Netscape" in env_val or ".youtube.com" in env_val or "\t" in env_val or "cookie" in env_val.lower():
+            try:
+                cookie_path = os.path.join(tempfile.gettempdir(), "drops-cookies.txt")
+                with open(cookie_path, "w", encoding="utf-8") as f:
+                    f.write(env_val)
+                return cookie_path
+            except Exception as e:
+                logger.warning("Failed to write cookies from env var: %s", e)
+
+    # Auto-detect Render Secret Files in /etc/secrets/
+    secrets_dir = Path("/etc/secrets")
+    if secrets_dir.is_dir():
         try:
-            if os.access(value, os.W_OK):
-                return value
-            writable_copy = os.path.join(tempfile.gettempdir(), "drops-cookies.txt")
-            shutil.copyfile(value, writable_copy)
-            return writable_copy
+            for p in sorted(secrets_dir.iterdir()):
+                if p.is_file() and (p.suffix.lower() == ".txt" or "cookie" in p.name.lower()):
+                    candidates.append(str(p))
         except Exception:
-            return value
-    # 2. If it is the raw cookie file content pasted directly into the env var:
-    if "# Netscape" in value or ".youtube.com" in value or "\t" in value or "cookie" in value.lower():
-        try:
-            cookie_path = os.path.join(tempfile.gettempdir(), "drops-cookies.txt")
-            with open(cookie_path, "w", encoding="utf-8") as f:
-                f.write(value)
-            return cookie_path
-        except Exception as e:
-            logger.warning("Failed to write cookies from env var: %s", e)
-            return None
+            pass
+
+    for path in candidates:
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            try:
+                writable_copy = os.path.join(tempfile.gettempdir(), f"drops-cookies-{Path(path).name}")
+                shutil.copyfile(path, writable_copy)
+                return writable_copy
+            except Exception:
+                return path
+
     return None
 
 
