@@ -260,10 +260,10 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         options["proxy"] = proxy
 
     CLIENT_TIERS = [
-        ["mweb", "android", "android_music", "ios_music", "ios"],
+        ["mweb", "android"],
         ["android", "ios"],
-        ["tv_embedded", "tv", "web_embedded"],
-        ["web_creator", "android_creator"],
+        ["tv_embedded", "tv"],
+        ["web_embedded", "android"],
     ]
 
     info = None

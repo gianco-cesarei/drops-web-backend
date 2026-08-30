@@ -26,7 +26,7 @@ ALLOWED_DOMAINS = ("youtube.com", "youtu.be", "soundcloud.com", "music.youtube.c
 YTDLP_LOCK = threading.Lock()
 
 
-YTDLP_PLAYER_CLIENTS = ["mweb", "android", "android_music", "ios_music", "ios"]
+YTDLP_PLAYER_CLIENTS = ["mweb", "android", "ios"]
 
 
 def ytdlp_extractor_args() -> dict:
