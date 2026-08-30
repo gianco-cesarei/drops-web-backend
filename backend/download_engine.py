@@ -18,7 +18,7 @@ from media_core import YTDLP_LOCK, is_youtube_url, strip_noise, ytdlp_cookiefile
 
 logger = logging.getLogger("drops.download")
 
-AUDIO_QUALITY = {"128": "128", "192": "192", "320": "0"}
+AUDIO_QUALITY = {"128": "128", "192": "192", "320": "0", "mp3": "0", "hq": "0"}
 
 # Our own abort messages (progress hook / duration check) - never retryable,
 # retrying an oversized/too-long media just repeats the same failure.
