@@ -85,20 +85,32 @@ def ytdlp_cookiefile() -> str | None:
 
     Render's datacenter IPs get YouTube's "Sign in to confirm you're not a bot"
     bot-check; a browser-exported cookies file is yt-dlp's documented workaround.
-    Optional: missing/invalid must never block startup or fall through to an error.
+    Supports BOTH a filesystem path (Render Secret File) AND raw Netscape cookie text.
     """
-    path = os.environ.get("DROPS_YTDLP_COOKIES", "").strip()
-    if not path or not os.path.isfile(path):
+    value = os.environ.get("DROPS_YTDLP_COOKIES", "").strip()
+    if not value:
         return None
-    if os.access(path, os.W_OK):
-        return path
-    # yt-dlp rewrites the cookie jar after use, but Render's Secret Files are
-    # mounted read-only (OSError [Errno 30]) - copy once to a writable spot
-    # and hand yt-dlp that copy instead; the original Secret File is untouched.
-    writable_copy = os.path.join(tempfile.gettempdir(), "drops-cookies.txt")
-    if not os.path.isfile(writable_copy):
-        shutil.copyfile(path, writable_copy)
-    return writable_copy
+    # 1. If it is an existing file on disk:
+    if os.path.isfile(value):
+        try:
+            if os.access(value, os.W_OK):
+                return value
+            writable_copy = os.path.join(tempfile.gettempdir(), "drops-cookies.txt")
+            shutil.copyfile(value, writable_copy)
+            return writable_copy
+        except Exception:
+            return value
+    # 2. If it is the raw cookie file content pasted directly into the env var:
+    if "# Netscape" in value or ".youtube.com" in value or "\t" in value or "cookie" in value.lower():
+        try:
+            cookie_path = os.path.join(tempfile.gettempdir(), "drops-cookies.txt")
+            with open(cookie_path, "w", encoding="utf-8") as f:
+                f.write(value)
+            return cookie_path
+        except Exception as e:
+            logger.warning("Failed to write cookies from env var: %s", e)
+            return None
+    return None
 
 
 def ytdlp_proxy() -> str | None:
