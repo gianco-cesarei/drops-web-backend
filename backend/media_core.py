@@ -26,17 +26,22 @@ ALLOWED_DOMAINS = ("youtube.com", "youtu.be", "soundcloud.com", "music.youtube.c
 YTDLP_LOCK = threading.Lock()
 
 
-YTDLP_PLAYER_CLIENTS = ["android", "ios", "mweb", "web", "tv"]
+YTDLP_PLAYER_CLIENTS = ["android", "ios", "mweb", "android_music", "ios_music", "web", "tv"]
 
 
 def ytdlp_extractor_args() -> dict:
     """youtube player clients to try, shared by download and BPM (same engine).
 
     Render's datacenter IPs trip YouTube's "Sign in to confirm you're not a
-    bot" check on the default web client; tv/ios/android clients frequently
-    skip it entirely. Tried before falling back to cookies.
+    bot" check on the default web client; android/ios/mweb clients with
+    player_skip skip the web player wall entirely.
     """
-    args: dict = {"youtube": {"player_client": list(YTDLP_PLAYER_CLIENTS)}}
+    args: dict = {
+        "youtube": {
+            "player_client": list(YTDLP_PLAYER_CLIENTS),
+            "player_skip": ["webpage", "configs"],
+        }
+    }
     args.update(_pot_provider_extractor_args())
     return args
 

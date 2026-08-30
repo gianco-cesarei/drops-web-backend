@@ -401,10 +401,15 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             t_after_dl = time.monotonic()
             if int(info.get("duration") or 0) > settings.max_duration_seconds:
                 raise yt_dlp.utils.DownloadError("Media duration limit exceeded")
-            candidates = [path for path in job_dir.iterdir() if path.is_file() and not path.name.endswith((".part", ".ytdl"))]
-            if len(candidates) != 1:
+            audio_candidates = [
+                path for path in job_dir.iterdir()
+                if path.is_file() and not path.name.endswith((".part", ".ytdl")) and path.suffix.lower() in {".mp3", ".m4a", ".flac", ".wav", ".aac", ".ogg", ".webm", ".opus", ".mp4"}
+            ]
+            if not audio_candidates:
+                audio_candidates = [path for path in job_dir.iterdir() if path.is_file() and not path.name.endswith((".part", ".ytdl"))]
+            if not audio_candidates:
                 raise RuntimeError("Downloaded artifact missing")
-            source_file = candidates[0]
+            source_file = sorted(audio_candidates, key=lambda p: (p.suffix.lower() == ".mp3", p.stat().st_size), reverse=True)[0]
             if source_file.stat().st_size > settings.max_file_bytes:
                 raise yt_dlp.utils.DownloadError("Download size limit exceeded")
             filename = safe_filename(str(info.get("title") or title or "audio"), "mp3")
