@@ -303,9 +303,30 @@ def download_multi_source(
     # user. Metadata recognition may label that recording, but must never turn
     # it into a search query or substitute a similarly named SoundCloud track.
     if is_youtube_url(native_url):
-        info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
-        logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
-        return info, "youtube"
+        try:
+            info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
+            logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
+            return info, "youtube"
+        except Exception as yt_exc:
+            logger.warning("direct youtube download failed job_id=%s detail=%r, attempting resilient SoundCloud fallback", job_id, str(yt_exc)[:200])
+            _clear_job_dir(job_dir)
+            match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
+            if match_url:
+                try:
+                    info = attempt_download(job_dir, match_url, quality, settings, started)
+                    logger.info("download source fallback riuscito job_id=%s source=soundcloud", job_id)
+                    return info, "soundcloud"
+                except Exception:
+                    _clear_job_dir(job_dir)
+            query_str = f"{artist or ''} {title or raw_title or ''}".strip()
+            if query_str:
+                try:
+                    info = attempt_download(job_dir, f"ytsearch1:{query_str}", quality, settings, started, proxy=proxy)
+                    logger.info("download source fallback ytsearch riuscito job_id=%s", job_id)
+                    return info, "youtube"
+                except Exception:
+                    _clear_job_dir(job_dir)
+            raise yt_exc
 
     match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
     if match_url:
