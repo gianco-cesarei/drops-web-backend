@@ -143,12 +143,15 @@ def is_youtube_url(value: str) -> bool:
 
 _NOISE_BRACKET_TOKENS = (
     "official", "free download", "premiere", "label", "records", "out now",
-    "video oficial", "audio oficial", "hq", "hd", "4k", "lyric video", "original mix",
+    "video oficial", "audio oficial", "hq", "hd", "4k", "1080p", "lyric video",
+    "lyrics", "visualizer", "official visualizer", "clip officiel", "remastered",
+    "remaster", "full album", "stream & download",
 )
-_NOISE_STANDALONE = ("free download", "premiere")
+_NOISE_STANDALONE = ("free download", "premiere", "out now", "official video", "official audio")
 _BRACKET_RE = re.compile(r"[\(\[][^\(\)\[\]]*[\)\]]")
-_SPLIT_RE = re.compile(r"\s[-–—]\s")
-_VINYL_POS_RE = re.compile(r"^(?:[a-dA-D][1-4]?|[1-4])(?:\.|\s*[-–—]|\s+)\s*")
+_SPLIT_RE = re.compile(r"\s+[-–—:|//]\s+")
+_VINYL_POS_RE = re.compile(r"^(?:[a-dA-D][1-4]?|[1-4]|#[0-9]+)(?:\.|\s*[-–—]|\s+)\s*")
+_LEADING_JUNK_RE = re.compile(r"^(?:(?:19|20)\d{2}[\s_.-]?\d{2,4}(?:[\s_.-]?\d{1,4})*|track[\s_-]?\d+|\d{1,3}[\s._-]+|#[0-9]{1,3}[\s._-]*)\s*", re.IGNORECASE)
 _CURATOR_CHANNELS = {
     "hate", "hate lab", "moskalus", "slav", "the_substance", "the substance", "substance",
     "boiler room", "cercle", "colors", "colorsxstudios", "houseum",
@@ -158,21 +161,24 @@ _CURATOR_CHANNELS = {
 
 
 def strip_noise(raw: str) -> str:
-    """Strip boilerplate noise like (Official Video), [Premiere], vinyl positions, etc."""
+    """Strip boilerplate noise like (Official Video), [Premiere], vinyl positions, dates, etc."""
+    cleaned = _LEADING_JUNK_RE.sub("", raw.strip())
     def _drop_if_noise(match: re.Match) -> str:
         full = match.group(0)
-        if full.startswith("["):
-            return ""
         inner = full[1:-1].strip().lower()
         if any(token in inner for token in _NOISE_BRACKET_TOKENS):
             return ""
+        if re.search(r"remix(?:19|20)\d{4,}", inner):
+            return ""
+        if full.startswith("[") and ("free" in inner or "download" in inner or "premiere" in inner or "official" in inner):
+            return ""
         return full
 
-    cleaned = _BRACKET_RE.sub(_drop_if_noise, raw)
+    cleaned = _BRACKET_RE.sub(_drop_if_noise, cleaned)
     for token in _NOISE_STANDALONE:
         cleaned = re.sub(re.escape(token), "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–—")
-    cleaned = _VINYL_POS_RE.sub("", cleaned).strip(" -–—")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–—:|")
+    cleaned = _VINYL_POS_RE.sub("", cleaned).strip(" -–—:|")
     return cleaned
 
 
@@ -180,12 +186,12 @@ _strip_noise = strip_noise
 
 
 def parse_artist_title(raw_title: str, fallback_artist: str | None = None) -> tuple[str | None, str]:
-    """Best-effort "Artist - Title" split, with noise like (Official Video) stripped first."""
+    """Best-effort "Artist - Title" split, with noise like (Official Video) and upload codes stripped first."""
     cleaned = strip_noise(raw_title)
     parts = _SPLIT_RE.split(cleaned, maxsplit=1)
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-        artist = _VINYL_POS_RE.sub("", parts[0].strip()).strip()
-        title = _VINYL_POS_RE.sub("", parts[1].strip()).strip()
+        artist = _VINYL_POS_RE.sub("", parts[0].strip()).strip(" -–—:|")
+        title = _VINYL_POS_RE.sub("", parts[1].strip()).strip(" -–—:|")
         return artist, title
     if fallback_artist:
         fb_clean = re.sub(r"[^a-z0-9]+", " ", fallback_artist.casefold()).strip()
