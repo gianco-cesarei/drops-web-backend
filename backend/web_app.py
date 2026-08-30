@@ -128,10 +128,7 @@ def _youtube_url_context(value: str) -> dict[str, str | None]:
         selected_track_id = path_parts[0]
     if not selected_track_id and len(path_parts) >= 2 and path_parts[0] in {"shorts", "embed"}:
         selected_track_id = path_parts[1]
-    if playlist_id and playlist_id.startswith("RD") and selected_track_id:
-        url_type = "track"
-        playlist_id = None
-    elif playlist_id and selected_track_id:
+    if playlist_id and selected_track_id:
         url_type = "track_in_playlist"
     elif playlist_id:
         url_type = "playlist"
