@@ -274,13 +274,23 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
                 if leftover.is_file():
                     leftover.unlink(missing_ok=True)
             exc_str = str(exc).lower()
-            # Se il proxy è scaduto (402 Payment Required), non autenticato (407) o fallito (tunnel/proxy error),
+            # Se il proxy causa blocco bot, 403 Forbidden, 402 Payment Required, 407 o errore tunnel,
             # rimuovi immediatamente il proxy e riprova con connessione diretta!
-            if "proxy" in exc_str or "tunnel" in exc_str or "402" in exc_str or "407" in exc_str:
-                logger.warning("Proxy error detected (%r), dropping proxy for direct connection fallback", str(exc)[:150])
-                current_options.pop("proxy", None)
+            if (
+                "proxy" in exc_str
+                or "tunnel" in exc_str
+                or "402" in exc_str
+                or "407" in exc_str
+                or "bot" in exc_str
+                or "sign in" in exc_str
+                or "forbidden" in exc_str
+                or "403" in exc_str
+            ):
+                if "proxy" in current_options:
+                    logger.warning("Proxy issue or bot-check detected (%r), dropping proxy for direct connection fallback", str(exc)[:150])
+                    current_options.pop("proxy", None)
             if str(exc) in DOWNLOAD_ABORT_MESSAGES or attempt == 3:
-                # Se è l'ultimo tentativo ed era fallito con proxy, fai un ultimo tentativo disperato diretto
+                # Se è l'ultimo tentativo ed era fallito con proxy, fai un ultimo tentativo diretto
                 if "proxy" in current_options:
                     try:
                         current_options.pop("proxy", None)

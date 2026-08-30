@@ -194,10 +194,12 @@ def parse_artist_title(raw_title: str, fallback_artist: str | None = None) -> tu
         title = _VINYL_POS_RE.sub("", parts[1].strip()).strip(" -–—:|")
         return artist, title
     if fallback_artist:
-        fb_clean = re.sub(r"[^a-z0-9]+", " ", fallback_artist.casefold()).strip()
+        fb = re.sub(r"\s*-\s*Topic\b", "", fallback_artist, flags=re.IGNORECASE).strip()
+        fb = re.sub(r"\s*\((?:Topic|Official)\)\s*", "", fb, flags=re.IGNORECASE).strip()
+        fb_clean = re.sub(r"[^a-z0-9]+", " ", fb.casefold()).strip()
         if fb_clean in _CURATOR_CHANNELS or "premiere" in fb_clean or "repost" in fb_clean:
             return None, cleaned.strip()
-        return fallback_artist.strip(), cleaned.strip()
+        return fb.strip() or None, cleaned.strip()
     return None, cleaned.strip()
 
 
