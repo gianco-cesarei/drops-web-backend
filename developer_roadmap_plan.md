@@ -44,6 +44,15 @@ L'obiettivo è creare una pagina di pianificazione interattiva per lo sviluppo d
      * **Scelte & Raccomandazioni:** Limitare di default il download a MP3 ad alta qualità (320kbps) per ottimizzare lo storage (Raccomandato), o abilitare il download in formato lossless FLAC/WAV per SoundCloud HQ.
      * **Azione:** Configurare i parametri post-processor FFmpeg sul backend in base alla sorgente e alla scelta dell'utente.
 
+3. **Task 1.3: Drop Agent — Autonomous Music Curator & Ingestion Engine [COMPLETATO]**
+   * *Miglioramento Utente:* Agente autonomo per curatela, estrazione tracklist da DJ set YouTube, download continuo del mix e dei singoli rilasci a 320kbps MP3, analisi armonica Camelot Wheel (8A/8B/11B) e BPM, tagging ID3v2.4 con cover art e generazione TRACKLIST.md.
+   * *a) Ingestion asincrona mix continuo + singoli release* `[back]` `[desktop]`
+     * **Azione:** Sviluppo di `drops-agent/drop_agent.py` e `downloader.py` per estrazione ad alta fedeltà a 320kbps MP3.
+   * *b) Analisi armonica e Camelot Wheel* `[back]` `[desktop]`
+     * **Azione:** Modulo `harmonic_analyzer.py` con chroma feature extraction, stima tonale Krumhansl-Kershner, mappatura ruota Camelot (es. `8A`, `11B`) e rilevamento BPM.
+   * *c) Generazione metadati e catalogazione cartelle* `[back]` `[desktop]`
+     * **Azione:** Tagging ID3v2.4 con mutagen, cover art embedded, esportazione `.m3u8` e generazione documentazione DJ in `TRACKLIST.md`.
+
 ---
 
 ### Sezione 2: Gestione Playlist & Download Multiplo
@@ -76,6 +85,8 @@ L'obiettivo è creare una pagina di pianificazione interattiva per lo sviluppo d
    * *b) Riproduttore audio persistente e coda d'ascolto* `[front]`
      * **Scelte & Raccomandazioni:** Implementare un player audio fisso a fondo pagina (Raccomandato) che rimanga attivo navigando nell'app, con supporto a una coda di riproduzione dinamica.
      * **Azione:** Integrare lo stato del player nel contesto globale di React/Astro.
+3. **Task 3.3: Architettura UI Utente Semplificata (Home, Download, Archivio) [COMPLETATO]**
+   * *Miglioramento Utente:* Esperienza essenziale e focalizzata per l'utente finale: Home pubblica con discovery, login rapido e flussi dedicati per download ed archivio cloud.
 
 ---
 
@@ -153,11 +164,13 @@ L'obiettivo è creare una pagina di pianificazione interattiva per lo sviluppo d
 
 ---
 
-### Sezione 8: Archivio Attività Completate (Completati)
-* **Introduzione:** Registro delle funzionalità storiche e strutturali già testate e in produzione.
-1. **Task 8.1: Raccolta storica degli obiettivi completati**
+### Sezione 8: Archivio Attività Completate (Archivio Storico)
+* **Introduzione:** Registro storico delle milestone consolidate, architetture rilasciate e miglioramenti strutturali di Drops.
+1. **Task 8.1: Rilascio Drop Agent v1 & Semplificazione UX (Agosto 2026)**
+   * *Miglioramento Utente:* Ingestion autonoma di DJ set e tracce singole a 320k con analisi armonica Camelot e nuova UX focalizzata (Home, Downloader, Archivio).
+2. **Task 8.2: Raccolta storica degli obiettivi completati**
    * *Miglioramento Utente:* Tieni traccia dell'affidabilità generale dell'app verificando le milestone superate e i bug fix applicati nel tempo.
-   * *a) Spostamento visivo dei vecchi obiettivi in questa sezione* `[front]`
+   * *a) Spostamento visivo dei vecchi obiettivi in questa sezione* `[front]` `[back]`
      * **Azione:** Raccogliere in un contenitore a comparsa (accordion) le attività storiche già completate:
        * Split dei 3 monorepo e pulizia del codice morto.
        * Risoluzione dello schermo nero sul mini-player (blocco delle dimensioni dell'artwork a 56x56).
