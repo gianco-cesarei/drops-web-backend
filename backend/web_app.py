@@ -24,7 +24,7 @@ import urllib.parse
 from bpm_analyzer import BpmAnalysisError, analyze_bpm
 from bpm_analyzer_async import analyze_r2_object_bpm_async
 from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
-from media_core import is_supported_url, resolve_track, safe_filename, tag_audio_file, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_proxy
+from media_core import is_supported_url, public_ytdlp_error, resolve_track, safe_filename, tag_audio_file, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_proxy
 from spotify_agent import SpotifyAgentError, WebSpotifyClient
 from discogs_agent import DiscogsClient
 from bpm_jobs import BpmJobManager
@@ -515,8 +515,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             # embed our request url or local paths before it leaves the worker.
             logger.error("download worker failed job_id=%s error_type=DownloadError", job_id)
             shutil.rmtree(job_dir, ignore_errors=True)
-            detail = str(exc).replace(url, "[url]").replace(str(job_dir), "[job]").strip() or "Download failed"
-            store.update_job(job_id, status="error", error=detail[:300], expires_at=time.time() + settings.artifact_ttl_seconds)
+            store.update_job(job_id, status="error", error=public_ytdlp_error(exc), expires_at=time.time() + settings.artifact_ttl_seconds)
         except Exception as exc:  # worker boundary: detail goes to the server log only, never the API response
             logger.error("download worker failed job_id=%s error_type=%s detail=%r", job_id, type(exc).__name__, str(exc)[:300])
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -672,8 +671,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         except yt_dlp.utils.DownloadError as exc:
             logger.error("youtube-direct worker failed job_id=%s error_type=DownloadError", job_id)
             shutil.rmtree(job_dir, ignore_errors=True)
-            detail = str(exc).replace(url, "[url]").replace(str(job_dir), "[job]").strip() or "Download failed"
-            store.update_job(job_id, status="error", error=detail[:300], expires_at=time.time() + settings.artifact_ttl_seconds)
+            store.update_job(job_id, status="error", error=public_ytdlp_error(exc), expires_at=time.time() + settings.artifact_ttl_seconds)
         except Exception as exc:  # worker boundary: detail to server log only
             logger.error("youtube-direct worker failed job_id=%s error_type=%s detail=%r", job_id, type(exc).__name__, str(exc)[:300])
             shutil.rmtree(job_dir, ignore_errors=True)

@@ -2,7 +2,7 @@
 # Official, upstream-maintained image for the free PO token HTTP server
 # (bgutil-ytdlp-pot-provider) - the compiled server + its own node_modules.
 # We only copy files out of it below; nothing from this stage runs directly.
-FROM brainicism/bgutil-ytdlp-pot-provider:latest AS bgutil
+FROM brainicism/bgutil-ytdlp-pot-provider@sha256:9a96e6385ce1928da87dea07b1cab0413d2cf8c07a3b8a8bd419f53df2c3843c AS bgutil
 
 # Node runtime, taken from a Debian/glibc image compatible with python:3.12-slim
 # below - NOT from the bgutil image above, whose base isn't guaranteed

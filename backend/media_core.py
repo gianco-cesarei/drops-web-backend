@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shutil
 import tempfile
 import threading
 import urllib.error
@@ -24,6 +23,7 @@ ALLOWED_DOMAINS = ("youtube.com", "youtu.be", "soundcloud.com", "music.youtube.c
 # from the same IP add up to more "bot-like" traffic and resource contention;
 # other jobs block here and run once the lock frees, they don't fail.
 YTDLP_LOCK = threading.Lock()
+_COOKIE_FILE_LOCK = threading.Lock()
 
 
 YTDLP_PLAYER_CLIENTS = ["mweb", "android", "ios"]
@@ -93,21 +93,21 @@ def ytdlp_cookiefile() -> str | None:
     if env_val:
         if os.path.isfile(env_val):
             candidates.append(env_val)
-        elif "# Netscape" in env_val or ".youtube.com" in env_val or "\t" in env_val or "cookie" in env_val.lower():
+        elif _valid_netscape_cookies(env_val):
             try:
-                cookie_path = os.path.join(tempfile.gettempdir(), "drops-cookies.txt")
-                with open(cookie_path, "w", encoding="utf-8") as f:
-                    f.write(env_val)
-                return cookie_path
+                return _write_private_cookie_copy(env_val)
             except Exception as e:
                 logger.warning("Failed to write cookies from env var: %s", e)
+        else:
+            logger.warning("DROPS_YTDLP_COOKIES non e' un file leggibile ne' contenuto Netscape valido; cookie disabilitati")
 
     # Auto-detect Render Secret Files in /etc/secrets/
     secrets_dir = Path("/etc/secrets")
     if secrets_dir.is_dir():
         try:
+            allowed_names = {"cookies.txt", "youtube-cookies.txt", "youtube_cookies.txt"}
             for p in sorted(secrets_dir.iterdir()):
-                if p.is_file() and (p.suffix.lower() == ".txt" or "cookie" in p.name.lower()):
+                if p.is_file() and p.name.lower() in allowed_names:
                     candidates.append(str(p))
         except Exception:
             pass
@@ -115,13 +115,55 @@ def ytdlp_cookiefile() -> str | None:
     for path in candidates:
         if os.path.isfile(path) and os.path.getsize(path) > 0:
             try:
-                writable_copy = os.path.join(tempfile.gettempdir(), f"drops-cookies-{Path(path).name}")
-                shutil.copyfile(path, writable_copy)
-                return writable_copy
+                content = Path(path).read_text(encoding="utf-8")
+                if not _valid_netscape_cookies(content):
+                    logger.warning("Cookie file configurato non e' Netscape valido; cookie disabilitati")
+                    continue
+                return _write_private_cookie_copy(content)
             except Exception:
-                return path
+                logger.warning("Cookie file configurato non leggibile; cookie disabilitati")
 
     return None
+
+
+def _valid_netscape_cookies(content: str) -> bool:
+    if not content.lstrip().startswith("# Netscape HTTP Cookie File"):
+        return False
+    for line in content.splitlines():
+        if line and not line.startswith("#") and len(line.split("\t")) == 7:
+            return True
+    return False
+
+
+def _write_private_cookie_copy(content: str) -> str:
+    """Write process-private cookie copy without following predictable symlinks."""
+    path = os.path.join(tempfile.gettempdir(), f"drops-youtube-cookies-{os.getpid()}.txt")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    with _COOKIE_FILE_LOCK:
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
+                handle.write(content)
+        finally:
+            os.close(fd)
+    return path
+
+
+def public_ytdlp_error(exc: Exception) -> str:
+    """Return stable user-facing text without leaking yt-dlp CLI guidance."""
+    detail = str(exc).casefold()
+    if "sign in to confirm you’re not a bot" in detail or "sign in to confirm you're not a bot" in detail:
+        return "YouTube richiede una verifica temporanea. Riprova più tardi."
+    if "private video" in detail:
+        return "Video YouTube privato o non accessibile."
+    if "video unavailable" in detail or "this video is unavailable" in detail:
+        return "Video YouTube non disponibile."
+    if "not available in your country" in detail or "geo" in detail and "blocked" in detail:
+        return "Video non disponibile dalla regione del servizio."
+    return "Download non riuscito. Riprova tra poco."
 
 
 def ytdlp_proxy() -> str | None:

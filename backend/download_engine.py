@@ -279,11 +279,6 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         ext_args["youtube"] = yt_args
         current_options["extractor_args"] = ext_args
 
-        # Attempt 1: prova prima con la connessione diretta (o proxy)
-        # Se attempt > 1 o errore proxy, scarta il proxy e usa connessione diretta/cookies
-        if attempt > 1 and "proxy" in current_options:
-            current_options.pop("proxy", None)
-
         try:
             with YTDLP_LOCK, yt_dlp.YoutubeDL(current_options) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -294,9 +289,13 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
                 if leftover.is_file():
                     leftover.unlink(missing_ok=True)
             exc_str = str(exc).lower()
-            # Se il proxy causa blocco bot, 403 Forbidden, 402, 407 o errore tunnel,
-            # rimuovi immediatamente il proxy per i tentativi successivi!
-            if "proxy" in current_options:
+            # Mantieni proxy su bot-check/403: tornare all'IP datacenter Render
+            # rende i retry inutili. Scartalo solo quando e' il proxy stesso a fallire.
+            proxy_failure = any(marker in exc_str for marker in (
+                "407 proxy authentication", "proxyconnect", "proxy connection",
+                "unable to connect to proxy", "tunnel connection failed",
+            ))
+            if "proxy" in current_options and proxy_failure:
                 logger.warning("Proxy error/bot detected (%r), dropping proxy for direct fallback", str(exc)[:150])
                 current_options.pop("proxy", None)
             if str(exc) in DOWNLOAD_ABORT_MESSAGES or attempt == 4:

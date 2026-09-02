@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reso più robusto accesso YouTube: attesa PO-token provider al cold-start, proxy mantenuto sui bot-check, validazione cookie Netscape, dipendenze extractor riproducibili e messaggi utente senza istruzioni interne `yt-dlp`.
+
 ### Added
 
 - `r2_storage_async.py`: aioboto3-based async R2 upload path (`upload_file_async`, `generate_presigned_url_async`, `delete_object_async`, `upload_many_async` with bounded concurrency) for future batch/playlist promotion flows, alongside the existing sync `r2_storage.py` used by the single-track download job. Same env vars, same `R2Error`, same object-key layout.
