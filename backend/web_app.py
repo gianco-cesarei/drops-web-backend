@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import secrets
 import shutil
 import threading
@@ -17,6 +18,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Res
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from starlette.datastructures import MutableHeaders
 from pydantic import BaseModel
 
 import urllib.request
@@ -38,6 +40,205 @@ from media_core import is_youtube_url
 
 COOKIE_NAME = "drops_session"
 logger = logging.getLogger("drops.web")
+
+
+# --- Cross-origin audio serving helpers (Archivio Web Audio + zip export) -----
+# The /file endpoint below must be consumable cross-origin so the front-end can
+# run tracks through a Web Audio graph (EQ + master volume) and fetch each one
+# to build a .zip. That needs: real Content-Type, byte-range/seek support (206 +
+# Content-Range + Accept-Ranges), and CORS headers on every response. CORS is
+# handled globally by CORSMiddleware (it wraps 200/206/416/OPTIONS alike and
+# exposes Content-Range/Accept-Ranges/Content-Length); these helpers own the
+# range + content-type + caching behaviour.
+
+_AUDIO_CONTENT_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+}
+
+_BYTES_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def _audio_content_type(filename: str | None) -> str:
+    """Best-effort audio MIME from the filename extension (default audio/mpeg)."""
+    if filename:
+        ext = Path(filename).suffix.lower()
+        if ext in _AUDIO_CONTENT_TYPES:
+            return _AUDIO_CONTENT_TYPES[ext]
+    return "audio/mpeg"
+
+
+def _parse_range(range_header: str | None, file_size: int):
+    """Return (start, end) inclusive for a single-range request, or None for a
+    full-content response. Raises HTTPException(416) when unsatisfiable."""
+    if not range_header:
+        return None
+    match = _BYTES_RANGE_RE.match(range_header.strip())
+    if not match or not (match.group(1) or match.group(2)):
+        # Malformed / multi-range: fall back to serving the whole file (200).
+        return None
+    start_s, end_s = match.groups()
+    if start_s:
+        start = int(start_s)
+        end = int(end_s) if end_s else file_size - 1
+    else:  # suffix range: last N bytes
+        start = max(0, file_size - int(end_s))
+        end = file_size - 1
+    if start >= file_size or start > end:
+        raise HTTPException(
+            status_code=416,
+            detail="Range not satisfiable",
+            headers={"Content-Range": f"bytes */{file_size}", "Accept-Ranges": "bytes"},
+        )
+    return start, min(end, file_size - 1)
+
+
+def _serve_local_file(path: Path, filename: str, content_type: str,
+                      range_header: str | None, is_head: bool,
+                      cache_control: str = "private, max-age=3600"):
+    file_size = path.stat().st_size
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": cache_control,
+        "Content-Disposition": f'inline; filename="{filename}"',
+    }
+    span = _parse_range(range_header, file_size)
+    if span is None:
+        start, end, status_code = 0, file_size - 1, 200
+    else:
+        start, end = span
+        status_code = 206
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    length = end - start + 1
+    headers["Content-Length"] = str(length)
+    if is_head:
+        return Response(status_code=status_code, media_type=content_type, headers=headers)
+
+    def iter_file(chunk_size: int = 64 * 1024):
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = fh.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(iter_file(), status_code=status_code,
+                             media_type=content_type, headers=headers)
+
+
+def _serve_r2_file(r2_key: str, filename: str, content_type: str,
+                   range_header: str | None, is_head: bool,
+                   cache_control: str = "private, max-age=3600"):
+    base_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": cache_control,
+        "Content-Disposition": f'inline; filename="{filename}"',
+    }
+    if is_head:
+        try:
+            meta = r2_storage.head_object(r2_key)
+        except r2_storage.R2Error:
+            raise HTTPException(status_code=404, detail="File not found")
+        headers = {**base_headers, "Content-Length": str(meta.get("ContentLength", 0))}
+        return Response(status_code=200, media_type=content_type, headers=headers)
+    try:
+        obj = r2_storage.get_object(r2_key, range_header=range_header)
+    except r2_storage.R2InvalidRangeError as exc:
+        headers = {"Accept-Ranges": "bytes"}
+        if exc.total_size is not None:
+            headers["Content-Range"] = f"bytes */{exc.total_size}"
+        raise HTTPException(status_code=416, detail="Range not satisfiable", headers=headers) from exc
+    except r2_storage.R2NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    except r2_storage.R2Error as exc:
+        raise HTTPException(status_code=502, detail="Could not stream file") from exc
+
+    def iter_body(body, chunk_size: int = 64 * 1024):
+        try:
+            while True:
+                chunk = body.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            body.close()
+
+    headers = {**base_headers, "Content-Length": str(obj["ContentLength"])}
+    status_code = 200
+    content_range = obj.get("ContentRange")
+    if content_range:
+        headers["Content-Range"] = content_range
+        status_code = 206
+    return StreamingResponse(iter_body(obj["Body"]), status_code=status_code,
+                             media_type=content_type, headers=headers)
+
+
+# Files that were downloaded and are sitting on the server must be consumable
+# cross-origin from any front-end origin: single-file download, the "Scarica
+# cartella" zip (a fetch() per track), and the Web Audio EQ/volume graph all
+# read the bytes with crossOrigin="anonymous". Route 1 (signed token, no
+# cookie) lets us answer with a plain wildcard. The global CORSMiddleware is
+# credentialed (it echoes the exact origin), which can't be combined with a
+# token-less public file, so this outer middleware force-sets a wildcard ONLY
+# on the /file endpoint and strips the credentialed markers there.
+_PUBLIC_FILE_RE = re.compile(r"^/api/v1/downloads/[^/]+/file$")
+_PUBLIC_CORS_EXPOSE = "Content-Range, Accept-Ranges, Content-Length, Content-Type, Content-Disposition"
+
+
+class PublicFileCORSMiddleware:
+    """Pure-ASGI so it streams the audio body untouched (no buffering)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not _PUBLIC_FILE_RE.match(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+        if scope.get("method") == "OPTIONS":
+            # Answer the preflight ourselves with a wildcard (outermost layer,
+            # so this runs before the credentialed CORSMiddleware).
+            await send({
+                "type": "http.response.start",
+                "status": 204,
+                "headers": [
+                    (b"access-control-allow-origin", b"*"),
+                    (b"access-control-allow-methods", b"GET, HEAD, OPTIONS"),
+                    (b"access-control-allow-headers", b"Range, Content-Type"),
+                    (b"access-control-max-age", b"600"),
+                    (b"content-length", b"0"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(raw=message["headers"])
+                headers["access-control-allow-origin"] = "*"
+                headers["access-control-allow-methods"] = "GET, HEAD, OPTIONS"
+                headers["access-control-allow-headers"] = "Range, Content-Type"
+                headers["access-control-expose-headers"] = _PUBLIC_CORS_EXPOSE
+                headers["access-control-max-age"] = "600"
+                # A wildcard origin is invalid alongside credentials; drop the
+                # credentialed markers the inner CORSMiddleware may have added.
+                if "access-control-allow-credentials" in headers:
+                    del headers["access-control-allow-credentials"]
+                if "vary" in headers:
+                    del headers["vary"]
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 class LoginRequest(BaseModel):
@@ -190,6 +391,14 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     def issue_session_token(owner: str) -> str:
         return session_serializer.dumps({"username": owner, "iat": int(time.time())})
 
+    # Separate salt so a file-access token can never be replayed as a
+    # session cookie (or vice-versa) even though both are signed with the
+    # same secret. Short TTL (settings.file_token_ttl_seconds, ~5 min).
+    file_token_serializer = URLSafeTimedSerializer(settings.session_secret, salt="drops-web-file-access")
+
+    def issue_file_token(job_id: str, owner: str) -> str:
+        return file_token_serializer.dumps({"job_id": job_id, "owner": owner})
+
     _last_cleanup = 0.0
 
     def cleanup(force: bool = False) -> None:
@@ -253,6 +462,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         allow_headers=["Content-Type", "Range"],
         expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
     )
+
+    # Outermost layer: forces a wildcard CORS on the public /file endpoint
+    # (must be added AFTER CORSMiddleware to wrap it).
+    app.add_middleware(PublicFileCORSMiddleware)
 
     def require_csrf_origin(request: Request) -> None:
         origin = request.headers.get("origin")
@@ -953,29 +1166,95 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Download not found")
         return public_job(row)
 
-    @app.api_route("/api/v1/downloads/{job_id}/file", methods=["GET", "HEAD"])
-    def get_file(job_id: str, owner: str = Depends(current_owner)):
+    @app.get("/api/v1/downloads/{job_id}/file-url")
+    def get_file_url(job_id: str, request: Request, owner: str = Depends(current_owner)):
+        """Mint a short-lived signed URL for a download's /file endpoint so the
+        front-end can consume the audio cross-origin (Web Audio EQ/volume and
+        the "download whole folder" zip export) with crossOrigin="anonymous" -
+        i.e. WITHOUT sending the session cookie. Ownership is checked here, so
+        the token can only ever point at a file the caller already owns."""
         row = store.get_job(job_id, owner)
         if not row:
             raise HTTPException(status_code=404, detail="Download not found")
+        token = issue_file_token(job_id, owner)
+        # Absolute URL honouring the reverse proxy (Render / Cloudflare) so the
+        # link is usable from the front origin, not just same-origin.
+        scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+        base = f"{scheme}://{host}"
+        return {
+            "url": f"{base}/api/v1/downloads/{job_id}/file?token={token}",
+            "token": token,
+            "expires_in": settings.file_token_ttl_seconds,
+        }
+
+    @app.api_route("/api/v1/downloads/{job_id}/file", methods=["GET", "HEAD"])
+    def get_file(
+        job_id: str,
+        request: Request,
+        response: Response,
+        token: str | None = Query(default=None),
+        drops_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    ):
+        # Auth: a valid short-lived signed token (cross-origin, cookie-less) OR
+        # the normal session cookie. The token path lets an <audio> element with
+        # crossOrigin="anonymous" and the zip-export fetch() reach the bytes
+        # without credentials; CORS is added by the global middleware.
+        refresh_cookie = False
+        if token:
+            try:
+                payload = file_token_serializer.loads(token, max_age=settings.file_token_ttl_seconds)
+            except SignatureExpired as exc:
+                raise HTTPException(status_code=401, detail="File link expired") from exc
+            except BadSignature as exc:
+                raise HTTPException(status_code=401, detail="Invalid file link") from exc
+            if payload.get("job_id") != job_id:
+                # Token minted for a different file must never unlock this one.
+                raise HTTPException(status_code=403, detail="Token does not match file")
+            owner = payload.get("owner")
+            if not owner:
+                raise HTTPException(status_code=401, detail="Invalid file link")
+        else:
+            owner = verify_session(drops_session)
+            refresh_cookie = True
+
+        row = store.get_job(job_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Download not found")
+
+        is_head = request.method == "HEAD"
+        range_header = request.headers.get("range")
+        if range_header and not range_header.startswith("bytes="):
+            range_header = None
+        filename = row["filename"] or f"{job_id}.mp3"
+        content_type = _audio_content_type(filename)
+
+        result = None
         # 1. Local file on disk
         if row["file_path"]:
             path = Path(row["file_path"]).resolve()
             expected_root = (jobs_dir / job_id).resolve()
             if path.parent == expected_root and path.is_file():
-                return FileResponse(path, filename=row["filename"] or f"{job_id}.mp3", media_type="audio/mpeg")
+                result = _serve_local_file(path, filename, content_type, range_header, is_head)
         # 2. Cloudflare R2 backup
-        if row.get("r2_key") and r2_storage.is_configured():
+        if result is None and row["r2_key"] and r2_storage.is_configured():
             try:
-                obj = r2_storage.get_object(row["r2_key"])
-                return StreamingResponse(
-                    obj["Body"],
-                    media_type="audio/mpeg",
-                    headers={"Content-Disposition": f'attachment; filename="{row["filename"] or f"{job_id}.mp3"}"'},
-                )
+                result = _serve_r2_file(row["r2_key"], filename, content_type, range_header, is_head)
+            except HTTPException:
+                raise
             except Exception:
-                pass
-        raise HTTPException(status_code=404, detail="File temporaneo scaduto sul server. Rilancia il download dalla sorgente.")
+                result = None
+        if result is None:
+            raise HTTPException(status_code=404, detail="File temporaneo scaduto sul server. Rilancia il download dalla sorgente.")
+
+        if refresh_cookie:
+            # Sliding session refresh, matching current_owner (the cookie path
+            # returns a Response directly, so set it on the outgoing response).
+            result.set_cookie(
+                COOKIE_NAME, issue_session_token(owner), max_age=settings.session_ttl_seconds,
+                httponly=True, secure=settings.cookie_secure, samesite="lax", path="/",
+            )
+        return result
 
     # --- Sezione 3 · Task 3.1/3.2: cloud library + private streaming --------
     @app.get("/api/tracks")

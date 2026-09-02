@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Cross-origin audio serving for the Archivio Web Audio graph (3-band EQ + master volume) and the "Scarica cartella" zip export. `GET /api/v1/downloads/{id}/file` now:
+  - accepts a short-lived signed token in the query string (`?token=...`, HMAC via itsdangerous, salt `drops-web-file-access`, TTL `DROPS_WEB_FILE_TOKEN_TTL_SECONDS`, default 300s) so it is reachable cookie-less with `crossOrigin="anonymous"`, alongside the existing session-cookie auth;
+  - is served with a wildcard `Access-Control-Allow-Origin: *` (new outer `PublicFileCORSMiddleware`, pure-ASGI, applied only to this endpoint; it also answers the `OPTIONS` preflight and strips the credentialed CORS markers a wildcard can't be combined with) on the 200, 206 and OPTIONS responses;
+  - supports HTTP Range requests (`206 Partial Content` + `Content-Range`, `416` when unsatisfiable, `Accept-Ranges: bytes` always) for seek/Web-Audio, on both the local-file and R2-fallback branches, with the real audio `Content-Type` (mp3/flac/m4a/mp4/wav/…), `Content-Length` and `Cache-Control: private, max-age=3600`.
+- `GET /api/v1/downloads/{id}/file-url`: owner-authenticated helper that mints the signed URL (returns `{url, token, expires_in}`, absolute URL honouring the reverse proxy) for the front to fetch.
+- `DROPS_WEB_FILE_TOKEN_TTL_SECONDS` setting (default 300). 15 new tests (`tests/test_file_endpoint.py`): token mint/auth, cookie-less access, expired/mismatched-token rejection, Range 206/suffix/416, HEAD, R2 fallback, wildcard CORS on GET/206/preflight.
+
 ### Fixed
 
 - Reso più robusto accesso YouTube: attesa PO-token provider al cold-start, proxy mantenuto sui bot-check, validazione cookie Netscape, dipendenze extractor riproducibili e messaggi utente senza istruzioni interne `yt-dlp`.

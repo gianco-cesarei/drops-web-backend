@@ -36,6 +36,7 @@ class WebSettings:
     allow_missing_origin: bool = False
     session_secret: str = ""
     database_url: str = ""
+    file_token_ttl_seconds: int = 300
 
     def __post_init__(self) -> None:
         if self.environment not in {"production", "development", "test"}:
@@ -100,4 +101,8 @@ class WebSettings:
             # to a local SQLite file (dev/test), keeping the cloud catalog code
             # path identical without an external database.
             database_url=os.environ.get("DATABASE_URL", "").strip(),
+            # Short-lived HMAC token that authorizes a single download's
+            # /file endpoint without a session cookie, so the front can
+            # consume audio cross-origin (Web Audio, zip export).
+            file_token_ttl_seconds=_positive_int("DROPS_WEB_FILE_TOKEN_TTL_SECONDS", 300),
         )
