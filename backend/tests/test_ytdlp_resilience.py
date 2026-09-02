@@ -124,3 +124,49 @@ def test_proxy_is_dropped_after_proxy_auth_failure(monkeypatch, tmp_path: Path):
 
     assert "proxy" in options_seen[0]
     assert "proxy" not in options_seen[1]
+
+
+def test_build_search_queries():
+    queries = download_engine.build_search_queries(
+        artist="Artist - Topic",
+        title="Track Title (Official Video) [HQ]",
+        raw_title="01. Artist - Track Title (Official Video)",
+        catalog_no="REC123",
+    )
+    assert "Artist Track Title" in queries
+    assert "Artist Track Title audio" in queries
+    assert "REC123 Track Title" in queries
+
+
+def test_download_multi_source_search_url_cascade(monkeypatch, tmp_path: Path):
+    urls_downloaded = []
+
+    def fake_attempt_download(job_dir, url, quality, settings, started, proxy=None):
+        urls_downloaded.append(url)
+        if "ytsearch5:Artist Track" in url:
+            return {"title": "Artist - Track", "duration": 180}
+        raise RuntimeError("Download failed for candidate")
+
+    monkeypatch.setattr(download_engine, "attempt_download", fake_attempt_download)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", lambda *args, **kwargs: None)
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    settings = SimpleNamespace(max_duration_seconds=900, max_file_bytes=100_000_000)
+
+    info, source = download_engine.download_multi_source(
+        job_dir=job_dir,
+        job_id="test-job-1",
+        native_url="https://soundcloud.com/search?q=Artist%20Track",
+        artist="Artist",
+        title="Track",
+        duration=180,
+        quality="320",
+        settings=settings,
+        started=0.0,
+    )
+
+    assert source == "youtube"
+    assert info["title"] == "Artist - Track"
+    assert any("ytsearch5:" in url for url in urls_downloaded)
+

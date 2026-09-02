@@ -161,8 +161,16 @@ def public_ytdlp_error(exc: Exception) -> str:
         return "Video YouTube privato o non accessibile."
     if "video unavailable" in detail or "this video is unavailable" in detail:
         return "Video YouTube non disponibile."
-    if "not available in your country" in detail or "geo" in detail and "blocked" in detail:
+    if "not available in your country" in detail or ("geo" in detail and "blocked" in detail):
         return "Video non disponibile dalla regione del servizio."
+    if "age" in detail and ("confirm" in detail or "restricted" in detail):
+        return "Video soggetto a restrizioni d'età."
+    if "copyright" in detail:
+        return "Contenuto non disponibile per copyright."
+    if "duration limit exceeded" in detail:
+        return "La durata del brano supera il limite consentito."
+    if "size limit exceeded" in detail:
+        return "La dimensione del file supera il limite consentito."
     return "Download non riuscito. Riprova tra poco."
 
 

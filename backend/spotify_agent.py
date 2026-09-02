@@ -19,6 +19,7 @@ from typing import Any
 
 import yt_dlp
 from discogs_agent import DiscogsClient
+from media_core import ytdlp_cookiefile, ytdlp_extractor_args
 
 SPOTIFY_AUTHORIZE = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN = "https://accounts.spotify.com/api/token"
@@ -732,7 +733,11 @@ def search_candidates(track_id: str, limit: int = 5) -> dict[str, Any]:
         "no_warnings": True,
         "extract_flat": True,
         "skip_download": True,
+        "extractor_args": ytdlp_extractor_args(),
     }
+    cookies = ytdlp_cookiefile()
+    if cookies:
+        options["cookiefile"] = cookies
     with yt_dlp.YoutubeDL(options) as ydl:
         result = ydl.extract_info(
             f"ytsearch{max(1, min(limit, 10))}:{query}", download=False

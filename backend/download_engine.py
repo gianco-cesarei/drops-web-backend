@@ -218,8 +218,44 @@ def find_soundcloud_match(
     return best_url
 
 
+def build_search_queries(
+    artist: str | None,
+    title: str | None,
+    raw_title: str | None = None,
+    catalog_no: str | None = None,
+) -> list[str]:
+    """Build an ordered list of search queries from most specific/clean to broader fallbacks."""
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    clean_artist = re.sub(r"\s*-\s*Topic\b", "", artist or "", flags=re.IGNORECASE).strip() or None
+    clean_artist = re.sub(r"\s*\((?:Topic|Official)\)\s*", "", clean_artist or "", flags=re.IGNORECASE).strip() or None
+    clean_title = strip_noise(title) if title else None
+    clean_raw = strip_noise(raw_title) if raw_title else None
+
+    candidates = [
+        f"{clean_artist} {clean_title}".strip() if clean_artist and clean_title else None,
+        f"{artist} {title}".strip() if artist and title else None,
+        f"{clean_artist} {title}".strip() if clean_artist and title else None,
+        clean_title.strip() if clean_title else None,
+        title.strip() if title else None,
+        clean_raw.strip() if clean_raw else None,
+        f"{clean_artist} {clean_title} audio".strip() if clean_artist and clean_title else None,
+        f"{catalog_no} {clean_title}".strip() if catalog_no and clean_title else None,
+    ]
+
+    for cand in candidates:
+        if cand:
+            norm = _normalize(cand)
+            if norm and norm not in seen:
+                seen.add(norm)
+                queries.append(cand)
+
+    return queries
+
+
 def attempt_download(job_dir: Path, url: str, quality: str, settings, started: float, *, proxy: str | None = None) -> dict[str, Any]:
-    """Run yt-dlp against a single candidate url, with the existing retry/limit behavior. Raises on total failure."""
+    """Run yt-dlp against a single candidate url, with existing retry/limit behavior. Raises on total failure."""
 
     def progress(event: dict) -> None:
         if time.monotonic() - started > settings.max_duration_seconds:
@@ -235,13 +271,12 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
             return "Media duration limit exceeded"
         return None
 
+    # Upgrade single-result ytsearch queries to ytsearch5 to allow inspecting alternative candidates
+    target_url = re.sub(r"^ytsearch[1-4]:", "ytsearch5:", url)
+
     options = {
         # Prefer a native MP3 stream (SoundCloud serves http_mp3/hls_mp3) so
-        # FFmpegExtractAudio remuxes with -c copy instead of re-encoding. On
-        # Render's 0.1-vCPU free tier a full AAC->MP3 transcode of one track
-        # costs ~50s; copying the already-MP3 stream is near-instant and avoids
-        # a second lossy pass. Falls back to bestaudio (e.g. YouTube = Opus/AAC),
-        # which still re-encodes because no MP3 source exists there.
+        # FFmpegExtractAudio remuxes with -c copy instead of re-encoding.
         "format": "bestaudio[acodec=mp3][protocol^=http]/bestaudio[acodec=mp3]/bestaudio/best",
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": AUDIO_QUALITY[quality]}],
         "outtmpl": str(job_dir / "source.%(ext)s"),
@@ -279,9 +314,13 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         ext_args["youtube"] = yt_args
         current_options["extractor_args"] = ext_args
 
+        # Format fallback on later attempts if rigid format fails
+        if attempt >= 3:
+            current_options["format"] = "bestaudio/best"
+
         try:
             with YTDLP_LOCK, yt_dlp.YoutubeDL(current_options) as ydl:
-                info = ydl.extract_info(url, download=True)
+                info = ydl.extract_info(target_url, download=True)
             break
         except Exception as exc:
             last_extract_error = exc
@@ -289,8 +328,6 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
                 if leftover.is_file():
                     leftover.unlink(missing_ok=True)
             exc_str = str(exc).lower()
-            # Mantieni proxy su bot-check/403: tornare all'IP datacenter Render
-            # rende i retry inutili. Scartalo solo quando e' il proxy stesso a fallire.
             proxy_failure = any(marker in exc_str for marker in (
                 "407 proxy authentication", "proxyconnect", "proxy connection",
                 "unable to connect to proxy", "tunnel connection failed",
@@ -301,7 +338,7 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
             if str(exc) in DOWNLOAD_ABORT_MESSAGES or attempt == 4:
                 raise
             logger.warning("download retrying attempt=%s client_tier=%s error=%r", attempt, client_tier, str(exc)[:150])
-            time.sleep(1)
+            time.sleep(attempt * 0.5)
     if info is None:
         raise last_extract_error or RuntimeError("Download failed")
     return info
@@ -330,16 +367,16 @@ def download_multi_source(
     raw_title: str | None = None, catalog_no: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """SoundCloud first (only if it's a confident match), native source (or YouTube search) last."""
-    # An explicit YouTube URL identifies the exact recording requested by the
-    # user. Metadata recognition may label that recording, but must never turn
-    # it into a search query or substitute a similarly named SoundCloud track.
+    search_queries = build_search_queries(artist, title, raw_title=raw_title, catalog_no=catalog_no)
+
+    # 1. Explicit YouTube URL identifies the exact requested recording
     if is_youtube_url(native_url):
         try:
             info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
             logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
             return info, "youtube"
         except Exception as yt_exc:
-            logger.warning("direct youtube download failed job_id=%s detail=%r, attempting resilient SoundCloud fallback", job_id, str(yt_exc)[:200])
+            logger.warning("direct youtube download failed job_id=%s detail=%r, attempting resilient SoundCloud/search fallback", job_id, str(yt_exc)[:200])
             _clear_job_dir(job_dir)
             clean_artist = re.sub(r"\s*-\s*Topic\b", "", artist or "", flags=re.IGNORECASE).strip() or None
             match_url = find_soundcloud_match(clean_artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
@@ -350,17 +387,17 @@ def download_multi_source(
                     return info, "soundcloud"
                 except Exception:
                     _clear_job_dir(job_dir)
-            # Fallback a ricerca YouTube non-Topic (versioni label / visualizer / upload alternativi)
-            query_str = f"{clean_artist or ''} {title or raw_title or ''}".strip()
-            if query_str:
+            # Fallback search query cascade on YouTube
+            for q in search_queries:
                 try:
-                    info = attempt_download(job_dir, f"ytsearch3:{query_str}", quality, settings, started, proxy=None)
-                    logger.info("download source fallback ytsearch riuscito job_id=%s", job_id)
+                    info = attempt_download(job_dir, f"ytsearch5:{q}", quality, settings, started, proxy=None)
+                    logger.info("download source fallback ytsearch riuscito job_id=%s query=%r", job_id, q)
                     return info, "youtube"
                 except Exception:
                     _clear_job_dir(job_dir)
             raise yt_exc
 
+    # 2. SoundCloud match attempt (if not exact YouTube URL)
     match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
     if match_url:
         try:
@@ -373,29 +410,30 @@ def download_multi_source(
     else:
         logger.info("download fallback job_id=%s motivo=nessun_match_soundcloud", job_id)
 
-    # If native_url is a search URL (e.g. soundcloud search) or generic query, use ytsearch fallback
+    # 3. Direct native URL attempt (ONLY if native_url is a direct media link, NOT a search webpage)
     is_search_url = "/search" in native_url or "scsearch" in native_url or "search_query" in native_url
-    query_str = f"{artist or ''} {title or raw_title or ''}".strip()
-    if is_search_url and query_str:
-        yt_query_url = f"ytsearch1:{query_str}"
+    label = _native_source_label(native_url)
+
+    if not is_search_url:
         try:
-            info = attempt_download(job_dir, yt_query_url, quality, settings, started, proxy=proxy)
-            logger.info("download source scelta job_id=%s source=youtube (via ytsearch)", job_id)
-            return info, "youtube"
+            info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
+            logger.info("download source scelta job_id=%s source=%s", job_id, label)
+            return info, label
         except Exception as exc:
-            logger.info("download fallback ytsearch fallito job_id=%s detail=%r", job_id, str(exc)[:200])
+            logger.info("download fallback attempting ytsearch cascade after native fail job_id=%s detail=%r", job_id, str(exc)[:200])
             _clear_job_dir(job_dir)
 
-    label = _native_source_label(native_url)
-    try:
-        info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
-        logger.info("download source scelta job_id=%s source=%s", job_id, label)
-        return info, label
-    except Exception as exc:
-        if query_str and not is_search_url:
-            logger.info("download fallback attempting ytsearch after native fail job_id=%s", job_id)
-            _clear_job_dir(job_dir)
-            info = attempt_download(job_dir, f"ytsearch1:{query_str}", quality, settings, started, proxy=proxy)
-            logger.info("download source scelta job_id=%s source=youtube", job_id)
+    # 4. YouTube search query cascade (for search URLs or when direct download failed)
+    last_search_exc: Exception | None = None
+    for q in search_queries:
+        try:
+            info = attempt_download(job_dir, f"ytsearch5:{q}", quality, settings, started, proxy=proxy)
+            logger.info("download source scelta job_id=%s source=youtube (via ytsearch cascade query=%r)", job_id, q)
             return info, "youtube"
-        raise exc
+        except Exception as exc:
+            last_search_exc = exc
+            logger.info("ytsearch candidate query failed job_id=%s query=%r detail=%r", job_id, q, str(exc)[:200])
+            _clear_job_dir(job_dir)
+
+    raise last_search_exc or RuntimeError("All download candidates failed")
+
