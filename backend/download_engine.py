@@ -448,33 +448,46 @@ def download_multi_source(
             if not youtube_error_allows_fallback(exact_error):
                 raise
             _clear_job_dir(job_dir)
+            # Try strict SoundCloud match first
             match_url = find_soundcloud_match(
                 artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, strict=True,
             )
-            if not match_url:
-                logger.info("youtube exact fallback rejected job_id=%s reason=no_strict_match", job_id)
-                raise exact_error
-            try:
-                info = attempt_download(job_dir, match_url, quality, settings, started)
-                accepted, score, reason = strict_candidate_match(
-                    artist, title, duration, info, catalog_no=catalog_no,
-                )
-                if not accepted:
-                    logger.warning(
-                        "youtube exact fallback post-download rejected job_id=%s score=%.2f reason=%s",
-                        job_id, score, reason,
+            if match_url:
+                try:
+                    info = attempt_download(job_dir, match_url, quality, settings, started)
+                    accepted, score, reason = strict_candidate_match(
+                        artist, title, duration, info, catalog_no=catalog_no,
                     )
+                    if accepted:
+                        logger.info("download source scelta job_id=%s source=soundcloud (strict fallback)", job_id)
+                        return info, "soundcloud"
                     _clear_job_dir(job_dir)
-                    raise exact_error
-                logger.info("download source scelta job_id=%s source=soundcloud (strict fallback)", job_id)
-                return info, "soundcloud"
-            except Exception as fallback_error:
-                logger.info(
-                    "youtube exact strict fallback failed job_id=%s detail=%r",
-                    job_id, str(fallback_error)[:200],
-                )
-                _clear_job_dir(job_dir)
-                raise exact_error
+                except Exception as fallback_error:
+                    logger.info("youtube exact strict fallback failed job_id=%s detail=%r", job_id, str(fallback_error)[:200])
+                    _clear_job_dir(job_dir)
+
+            # If no strict match and title was missing (raw YouTube link), resolve via oEmbed and search SoundCloud
+            if not title:
+                oe_artist, oe_title = artist, title
+                try:
+                    from media_core import _oembed, parse_artist_title
+                    oe_data = _oembed("https://www.youtube.com/oembed", native_url)
+                    if oe_data and oe_data.get("title"):
+                        oe_artist, oe_title = parse_artist_title(oe_data["title"], fallback_artist=oe_data.get("author_name"))
+                except Exception:
+                    pass
+
+                search_query = f"{oe_artist or ''} {oe_title or ''}".strip()
+                if search_query:
+                    try:
+                        info = attempt_download(job_dir, f"scsearch5:{search_query}", quality, settings, started)
+                        logger.info("download source scelta job_id=%s source=soundcloud (scsearch fallback query=%r)", job_id, search_query)
+                        return info, "soundcloud"
+                    except Exception as sc_exc:
+                        logger.warning("scsearch fallback failed job_id=%s detail=%r", job_id, str(sc_exc)[:200])
+                        _clear_job_dir(job_dir)
+
+            raise exact_error
 
     # 2. SoundCloud match attempt (if not exact YouTube URL)
     match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
