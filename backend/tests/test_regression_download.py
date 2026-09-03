@@ -110,3 +110,37 @@ def test_existing_download_rejects_bad_quality(make_client):
         json={"url": "https://www.youtube.com/watch?v=abc", "quality": "999"},
     )
     assert resp.status_code == 400
+
+
+def test_fast_download_with_payload_title_and_artist(make_client, monkeypatch):
+    """When title and artist are provided in request payload, resolve_track and oEmbed are skipped in endpoint."""
+    import web_app
+
+    resolved_calls = []
+
+    def mock_oembed(url):
+        resolved_calls.append("oembed")
+        return {"title": "oEmbed Title", "artist": "oEmbed Artist"}
+
+    def mock_resolve(url):
+        resolved_calls.append("resolve")
+        return {"title": "Resolved Title", "artist": "Resolved Artist"}
+
+    monkeypatch.setattr(web_app, "resolve_track_oembed", mock_oembed)
+    monkeypatch.setattr(web_app, "resolve_track", mock_resolve)
+
+    client, app = make_client()
+    resp = client.post(
+        "/api/v1/downloads",
+        json={
+            "url": "https://www.youtube.com/watch?v=abc",
+            "quality": "320",
+            "artist": "Direct Artist",
+            "title": "Direct Title",
+        },
+    )
+    assert resp.status_code == 202
+    assert "oembed" not in resolved_calls
+    body = resp.json()
+    assert body["artist"] == "Direct Artist"
+    assert body["title"] == "Direct Title"

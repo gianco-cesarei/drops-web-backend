@@ -322,6 +322,24 @@ def _resolve_via_ytdlp(url: str) -> dict:
     return {"title": title, "artist": artist, "raw_title": raw_title, "cover_url": info.get("thumbnail"), "duration": info.get("duration")}
 
 
+def resolve_track_oembed(url: str) -> dict | None:
+    """Ultra-fast oEmbed-only metadata check. Returns dict if oEmbed returned title, else None."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    endpoint = None
+    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
+        endpoint = "https://soundcloud.com/oembed"
+    elif host in {"youtube.com", "youtu.be", "music.youtube.com"} or host.endswith((".youtube.com", ".youtu.be")):
+        endpoint = "https://www.youtube.com/oembed"
+    if not endpoint:
+        return None
+    oembed = _oembed(endpoint, url)
+    if oembed and oembed.get("title"):
+        raw_title = str(oembed["title"])
+        artist, title = parse_artist_title(raw_title, oembed.get("author_name"))
+        return {"title": title, "artist": artist, "raw_title": raw_title, "cover_url": oembed.get("thumbnail_url"), "duration": None}
+    return None
+
+
 def resolve_track(url: str) -> dict:
     """Fast, metadata-only track recognition - never downloads audio, never touches the bot wall.
 
@@ -330,17 +348,9 @@ def resolve_track(url: str) -> dict:
     recognition failures degrade to an unknown-track job instead of blocking
     the "card appears instantly" flow.
     """
-    host = (urllib.parse.urlsplit(url).hostname or "").lower()
-    endpoint = None
-    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
-        endpoint = "https://soundcloud.com/oembed"
-    elif host in {"youtube.com", "youtu.be", "music.youtube.com"} or host.endswith((".youtube.com", ".youtu.be")):
-        endpoint = "https://www.youtube.com/oembed"
-    oembed = _oembed(endpoint, url) if endpoint else None
-    if oembed and oembed.get("title"):
-        raw_title = str(oembed["title"])
-        artist, title = parse_artist_title(raw_title, oembed.get("author_name"))
-        return {"title": title, "artist": artist, "raw_title": raw_title, "cover_url": oembed.get("thumbnail_url"), "duration": None}
+    res = resolve_track_oembed(url)
+    if res:
+        return res
     return _resolve_via_ytdlp(url)
 
 

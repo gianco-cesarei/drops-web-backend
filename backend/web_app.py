@@ -1,3 +1,5 @@
+import io
+import json
 import logging
 import os
 import re
@@ -5,38 +7,48 @@ import secrets
 import shutil
 import threading
 import time
-import json
+import urllib.parse
+import urllib.request
 import uuid
-from contextlib import asynccontextmanager
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import yt_dlp
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
-from starlette.datastructures import MutableHeaders
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
+from starlette.datastructures import MutableHeaders
 
-import urllib.request
-import urllib.parse
+from academy_store import STATUS_READY as ACADEMY_STATUS_READY, AcademyStore
 from bpm_analyzer import BpmAnalysisError, analyze_bpm
 from bpm_analyzer_async import analyze_r2_object_bpm_async
-from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
-from media_core import is_supported_url, public_ytdlp_error, resolve_track, safe_filename, tag_audio_file, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_proxy
-from spotify_agent import SpotifyAgentError, WebSpotifyClient
-from discogs_agent import DiscogsClient
 from bpm_jobs import BpmJobManager
+from discogs_agent import DiscogsClient
+from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
+from folder_store import FolderStore
+from media_core import (
+    is_supported_url,
+    is_youtube_url,
+    public_ytdlp_error,
+    resolve_track,
+    resolve_track_oembed,
+    safe_filename,
+    tag_audio_file,
+    ytdlp_cookiefile,
+    ytdlp_extractor_args,
+    ytdlp_proxy,
+)
+import r2_storage
+from spotify_agent import SpotifyAgentError, WebSpotifyClient
+from track_store import TrackStore
 from web_settings import WebSettings
 from web_store import WebStore
-from track_store import TrackStore
-from academy_store import AcademyStore, STATUS_READY as ACADEMY_STATUS_READY
-from folder_store import FolderStore
-import r2_storage
-from media_core import is_youtube_url
 
 COOKIE_NAME = "drops_session"
 logger = logging.getLogger("drops.web")
@@ -581,6 +593,26 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         duration = row["duration"] if row else None
         raw_title = row["raw_title"] if row else None
 
+        if not (artist and title):
+            try:
+                bg_rec = resolve_track(url)
+                if bg_rec:
+                    artist = artist or bg_rec.get("artist")
+                    title = title or bg_rec.get("title")
+                    raw_title = raw_title or bg_rec.get("raw_title")
+                    duration = duration or bg_rec.get("duration")
+                    cover_url = (row["cover_url"] if (row and "cover_url" in row.keys() and row["cover_url"]) else None) or bg_rec.get("cover_url")
+                    store.update_job(
+                        job_id,
+                        artist=artist,
+                        title=title,
+                        raw_title=raw_title,
+                        duration=duration,
+                        cover_url=cover_url,
+                    )
+            except Exception as exc:
+                logger.info("background resolve_track skip job_id=%s detail=%r", job_id, str(exc)[:200])
+
         catalog_no = None
         enrichment = None
         if artist and title:
@@ -1001,11 +1033,17 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if request.quality not in AUDIO_QUALITY:
             raise HTTPException(status_code=400, detail="Invalid quality")
         job_id = str(uuid.uuid4())
-        try:
-            recognized = resolve_track(request.url)
-        except Exception as e:
-            logger.warning("resolve_track failed for %s: %s", request.url, e)
-            recognized = {}
+        recognized = {}
+        if request.title and request.artist:
+            # Fast-path: title and artist provided in payload -> skip resolve_track in endpoint
+            pass
+        else:
+            # Ultra-fast oEmbed check only; slow yt-dlp resolution deferred to background process_job
+            try:
+                recognized = resolve_track_oembed(request.url) or {}
+            except Exception as e:
+                logger.warning("resolve_track_oembed failed for %s: %s", request.url, e)
+                recognized = {}
         accepted = store.create_job_if_capacity(
             job_id,
             owner,
@@ -1302,10 +1340,6 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         owner: str = Depends(current_owner),
         _: None = Depends(require_csrf_origin),
     ):
-        import io
-        import zipfile
-        from starlette.responses import StreamingResponse
-
         # Get list of job_ids from body (or all ready jobs if empty)
         try:
             body = request.json() if hasattr(request, "json") else {}
@@ -1347,10 +1381,6 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     @app.get("/api/v1/content/extract-cover")
     def extract_cover(url: str, owner: str = Depends(current_owner)):
         """Extract og:image or cover artwork from a source reference URL."""
-        import urllib.request
-        import urllib.parse
-        import re
-        
         if not url.startswith("http://") and not url.startswith("https://"):
             raise HTTPException(status_code=400, detail="URL non valido")
             
@@ -1400,8 +1430,6 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     @app.post("/api/v1/content/save")
     def save_article(article: dict, owner: str = Depends(current_owner)):
         """Save or update an article directly inside content.json on the local disk."""
-        import json
-        
         art_id = article.get("id")
         if not art_id:
             raise HTTPException(status_code=400, detail="ID articolo mancante")
