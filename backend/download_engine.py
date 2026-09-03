@@ -367,40 +367,13 @@ def download_multi_source(
 ) -> tuple[dict[str, Any], str]:
     """SoundCloud first (only if it's a confident match), native source (or YouTube search) last."""
     search_queries = build_search_queries(artist, title, raw_title=raw_title, catalog_no=catalog_no)
+    is_search_url = "/search" in native_url or "scsearch" in native_url or "search_query" in native_url
 
     # 1. Explicit YouTube URL identifies the exact requested recording
-    if is_youtube_url(native_url):
-        try:
-            info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
-            logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
-            return info, "youtube"
-        except Exception as yt_exc:
-            logger.warning("direct youtube download failed job_id=%s detail=%r, attempting resilient SoundCloud/search fallback", job_id, str(yt_exc)[:200])
-            _clear_job_dir(job_dir)
-            clean_artist = re.sub(r"\s*-\s*Topic\b", "", artist or "", flags=re.IGNORECASE).strip() or None
-            match_url = find_soundcloud_match(clean_artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
-            if match_url:
-                try:
-                    info = attempt_download(job_dir, match_url, quality, settings, started)
-                    logger.info("download source fallback riuscito job_id=%s source=soundcloud", job_id)
-                    return info, "soundcloud"
-                except Exception:
-                    _clear_job_dir(job_dir)
-            # Fallback search query cascade on YouTube then SoundCloud
-            for q in search_queries:
-                try:
-                    info = attempt_download(job_dir, f"ytsearch5:{q}", quality, settings, started, proxy=None)
-                    logger.info("download source fallback ytsearch riuscito job_id=%s query=%r", job_id, q)
-                    return info, "youtube"
-                except Exception:
-                    _clear_job_dir(job_dir)
-                    try:
-                        info = attempt_download(job_dir, f"scsearch5:{q}", quality, settings, started, proxy=None)
-                        logger.info("download source fallback scsearch riuscito job_id=%s query=%r", job_id, q)
-                        return info, "soundcloud"
-                    except Exception:
-                        _clear_job_dir(job_dir)
-            raise yt_exc
+    if is_youtube_url(native_url) and not is_search_url:
+        info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
+        logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
+        return info, "youtube"
 
     # 2. SoundCloud match attempt (if not exact YouTube URL)
     match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
@@ -416,7 +389,6 @@ def download_multi_source(
         logger.info("download fallback job_id=%s motivo=nessun_match_soundcloud", job_id)
 
     # 3. Direct native URL attempt (ONLY if native_url is a direct media link, NOT a search webpage)
-    is_search_url = "/search" in native_url or "scsearch" in native_url or "search_query" in native_url
     label = _native_source_label(native_url)
 
     if not is_search_url:
@@ -441,4 +413,3 @@ def download_multi_source(
             _clear_job_dir(job_dir)
 
     raise last_search_exc or RuntimeError("All download candidates failed")
-

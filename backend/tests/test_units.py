@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import download_engine
 import r2_storage
 import track_store
@@ -92,3 +94,61 @@ def test_explicit_youtube_url_never_substitutes_soundcloud(monkeypatch, tmp_path
     assert source == "youtube"
     assert info["title"] == "Miles Mercer - Voice Control [FOR07]"
     assert calls == [(requested_url, "http://proxy.invalid:8080")]
+
+
+def test_explicit_youtube_failure_never_falls_back_to_search(monkeypatch, tmp_path: Path):
+    requested_url = "https://www.youtube.com/watch?v=JbySohLL3io"
+    calls = []
+
+    def failing_attempt(job_dir, url, quality, settings, started, *, proxy=None):
+        calls.append((url, proxy))
+        raise RuntimeError("youtube verification required")
+
+    def unexpected_soundcloud_search(*args, **kwargs):
+        raise AssertionError("explicit YouTube URL must not search SoundCloud")
+
+    monkeypatch.setattr(download_engine, "attempt_download", failing_attempt)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", unexpected_soundcloud_search)
+
+    with pytest.raises(RuntimeError, match="youtube verification required"):
+        download_engine.download_multi_source(
+            tmp_path,
+            "job-2",
+            requested_url,
+            "Miles Mercer",
+            "Voice Control",
+            None,
+            "320",
+            SimpleNamespace(),
+            0.0,
+            proxy="http://proxy.invalid:8080",
+        )
+
+    assert calls == [(requested_url, "http://proxy.invalid:8080")]
+
+
+def test_youtube_search_page_still_uses_metadata_search(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_attempt(job_dir, url, quality, settings, started, *, proxy=None):
+        calls.append((url, proxy))
+        return {"title": "Artist - Track", "duration": 180}
+
+    monkeypatch.setattr(download_engine, "attempt_download", fake_attempt)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", lambda *args, **kwargs: None)
+
+    _, source = download_engine.download_multi_source(
+        tmp_path,
+        "job-search",
+        "https://www.youtube.com/results?search_query=Artist+Track",
+        "Artist",
+        "Track",
+        None,
+        "320",
+        SimpleNamespace(),
+        0.0,
+        proxy="http://proxy.invalid:8080",
+    )
+
+    assert source == "youtube"
+    assert calls == [("ytsearch5:Artist Track", "http://proxy.invalid:8080")]
