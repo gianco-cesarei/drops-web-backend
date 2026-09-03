@@ -149,7 +149,9 @@ def strict_candidate_match(
 
 def youtube_error_allows_fallback(exc: Exception) -> bool:
     detail = str(exc).casefold()
-    return any(marker in detail for marker in YOUTUBE_FALLBACK_ERROR_MARKERS)
+    if any(msg.casefold() in detail for msg in DOWNLOAD_ABORT_MESSAGES):
+        return False
+    return True
 
 
 def find_soundcloud_match(
