@@ -466,9 +466,9 @@ def download_multi_source(
                     logger.info("youtube exact strict fallback failed job_id=%s detail=%r", job_id, str(fallback_error)[:200])
                     _clear_job_dir(job_dir)
 
-            # If no strict match and title was missing (raw YouTube link), resolve via oEmbed and search SoundCloud
-            if not title:
-                oe_artist, oe_title = artist, title
+            # Search SoundCloud using title/artist or oEmbed metadata if missing
+            oe_artist, oe_title = artist, title
+            if not oe_title:
                 try:
                     from media_core import _oembed, parse_artist_title
                     oe_data = _oembed("https://www.youtube.com/oembed", native_url)
@@ -477,15 +477,15 @@ def download_multi_source(
                 except Exception:
                     pass
 
-                search_query = f"{oe_artist or ''} {oe_title or ''}".strip()
-                if search_query:
-                    try:
-                        info = attempt_download(job_dir, f"scsearch5:{search_query}", quality, settings, started)
-                        logger.info("download source scelta job_id=%s source=soundcloud (scsearch fallback query=%r)", job_id, search_query)
-                        return info, "soundcloud"
-                    except Exception as sc_exc:
-                        logger.warning("scsearch fallback failed job_id=%s detail=%r", job_id, str(sc_exc)[:200])
-                        _clear_job_dir(job_dir)
+            search_query = f"{oe_artist or ''} {oe_title or ''}".strip()
+            if search_query:
+                try:
+                    info = attempt_download(job_dir, f"scsearch5:{search_query}", quality, settings, started)
+                    logger.info("download source scelta job_id=%s source=soundcloud (scsearch fallback query=%r)", job_id, search_query)
+                    return info, "soundcloud"
+                except Exception as sc_exc:
+                    logger.warning("scsearch fallback failed job_id=%s detail=%r", job_id, str(sc_exc)[:200])
+                    _clear_job_dir(job_dir)
 
             raise exact_error
 

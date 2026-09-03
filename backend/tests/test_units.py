@@ -121,7 +121,7 @@ def test_explicit_youtube_failure_without_strict_match_never_falls_back_blindly(
             proxy="http://proxy.invalid:8080",
         )
 
-    assert calls == [(requested_url, "http://proxy.invalid:8080")]
+    assert calls == [(requested_url, "http://proxy.invalid:8080"), ("scsearch5:Miles Mercer Voice Control", None)]
 
 
 def test_explicit_youtube_failure_uses_only_validated_direct_fallback(monkeypatch, tmp_path: Path):
