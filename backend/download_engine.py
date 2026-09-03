@@ -294,12 +294,11 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         options["cookiefile"] = cookies
     if proxy:
         options["proxy"] = proxy
-
     CLIENT_TIERS = [
-        ["mweb", "android"],
-        ["android", "ios"],
-        ["tv_embedded", "tv"],
-        ["web_embedded", "android"],
+        ["tv", "mweb", "android", "ios"],
+        ["web_creator", "tv_embedded", "tv"],
+        ["web_embedded", "android", "mweb"],
+        ["mweb", "web", "android"],
     ]
 
     info = None
@@ -387,7 +386,7 @@ def download_multi_source(
                     return info, "soundcloud"
                 except Exception:
                     _clear_job_dir(job_dir)
-            # Fallback search query cascade on YouTube
+            # Fallback search query cascade on YouTube then SoundCloud
             for q in search_queries:
                 try:
                     info = attempt_download(job_dir, f"ytsearch5:{q}", quality, settings, started, proxy=None)
@@ -395,6 +394,12 @@ def download_multi_source(
                     return info, "youtube"
                 except Exception:
                     _clear_job_dir(job_dir)
+                    try:
+                        info = attempt_download(job_dir, f"scsearch5:{q}", quality, settings, started, proxy=None)
+                        logger.info("download source fallback scsearch riuscito job_id=%s query=%r", job_id, q)
+                        return info, "soundcloud"
+                    except Exception:
+                        _clear_job_dir(job_dir)
             raise yt_exc
 
     # 2. SoundCloud match attempt (if not exact YouTube URL)
