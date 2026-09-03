@@ -64,8 +64,65 @@ def _token_overlap(query: str, target: str) -> float:
 
 
 def _normalize_descriptors(value: str | None) -> str:
-    norm = _normalize(value)
-    return re.sub(r"\b(rework|edit|dub|vip|version|club mix|extended mix|original mix|original)\b", "remix", norm)
+    return _normalize(value)
+
+
+MODIFIER_ADJECTIVES = {
+    "extended", "original", "club", "radio", "vip", "instrumental", "vocal", "dub",
+    "full", "long", "short", "edit", "rework", "acoustic", "live", "special", "main",
+    "bootleg", "version", "mix", "cut",
+}
+
+_VERSION_RE = re.compile(
+    r"\(([^()]+?)\s+(remix|edit|dub|vip|rework|version|mix|club mix|extended mix|original mix|bootleg|acapella|instrumental)\)"
+    r"|\[([^\[\]]+?)\s+(remix|edit|dub|vip|rework|version|mix|club mix|extended mix|original mix|bootleg|acapella|instrumental)\]"
+    r"|(?:^|\s*[-–—:]\s*)([A-Za-z0-9\s&.+'-]+?)\s+(remix|edit|dub|vip|rework|version|mix|club mix|extended mix|original mix|bootleg|acapella|instrumental)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_version_info(text: str | None) -> dict[str, Any]:
+    """Extract remixer name and version type (e.g., Manoo Remix, Tale Of Us Edit, Extended Mix, Dub)."""
+    if not text:
+        return {"remixer": None, "version_type": None, "descriptors": set()}
+
+    norm_text = _normalize(text)
+    descriptors = set()
+    remixer = None
+    version_type = None
+
+    for m in _VERSION_RE.finditer(text):
+        raw_prefix = m.group(1) or m.group(3) or m.group(5) or ""
+        v_type = (m.group(2) or m.group(4) or m.group(6) or "").lower().strip()
+        prefix_norm = _normalize(raw_prefix)
+
+        prefix_words = set(prefix_norm.split())
+        if prefix_words and not prefix_words.issubset(MODIFIER_ADJECTIVES):
+            remixer = prefix_norm
+            version_type = v_type
+            descriptors.update(prefix_words)
+            descriptors.add(v_type)
+            break
+        else:
+            if prefix_norm:
+                version_type = f"{prefix_norm} {v_type}".strip()
+                descriptors.update(prefix_words)
+            else:
+                version_type = v_type
+            descriptors.add(v_type)
+
+    if not version_type:
+        for kw in ["remix", "edit", "dub", "vip", "rework", "acapella", "instrumental", "extended"]:
+            if kw in norm_text.split():
+                descriptors.add(kw)
+                if not version_type:
+                    version_type = kw
+
+    return {
+        "remixer": remixer,
+        "version_type": version_type,
+        "descriptors": descriptors,
+    }
 
 
 def score_candidate(
@@ -74,10 +131,12 @@ def score_candidate(
     entry: dict[str, Any],
     *,
     catalog_no: str | None = None,
+    label: str | None = None,
 ) -> float:
     candidate_title = str(entry.get("title") or "")
     candidate_uploader = str(entry.get("uploader") or "")
     candidate_combined = f"{candidate_title} {candidate_uploader}".strip()
+    cand_norm = _normalize(candidate_combined)
 
     title_words = set(_normalize(title).split()) if title else set()
     if title and title_words:
@@ -103,11 +162,37 @@ def score_candidate(
     if artist:
         scores.append((similarity(title, candidate_title) + similarity(artist, candidate_uploader)) / 2)
         scores.append((effective_t_overlap + _token_overlap(artist, candidate_combined)) / 2)
+
+    base_score = max(scores)
+
+    ref_v = extract_version_info(title)
+    cand_v = extract_version_info(candidate_combined)
+
+    if ref_v["remixer"]:
+        ref_remixer = ref_v["remixer"]
+        cand_remixer = cand_v["remixer"]
+        if cand_remixer and cand_remixer != ref_remixer:
+            return base_score * 0.2
+        if ref_remixer not in cand_norm:
+            return base_score * 0.3
+        base_score = max(base_score, 0.85)
+
+    if ref_v["version_type"]:
+        ref_vt = ref_v["version_type"]
+        if ref_vt in {"dub", "vip", "acapella", "instrumental"} and ref_vt not in cand_norm:
+            return base_score * 0.3
+
     if catalog_no:
         cat_clean = _normalize(catalog_no)
-        if cat_clean and cat_clean in _normalize(candidate_combined):
-            scores.append(0.85)
-    return max(scores)
+        if cat_clean and cat_clean in cand_norm:
+            base_score = max(base_score, 0.85)
+
+    if label:
+        lbl_clean = _normalize(label)
+        if lbl_clean and lbl_clean in cand_norm:
+            base_score = min(1.0, base_score + 0.1)
+
+    return base_score
 
 
 def strict_candidate_match(
@@ -117,20 +202,45 @@ def strict_candidate_match(
     entry: dict[str, Any],
     *,
     catalog_no: str | None = None,
+    label: str | None = None,
 ) -> tuple[bool, float, str]:
     """Gate fallback candidates tightly enough to avoid substituting another track."""
-    score = score_candidate(artist, title, entry, catalog_no=catalog_no)
+    score = score_candidate(artist, title, entry, catalog_no=catalog_no, label=label)
     if not artist or not title:
         return False, score, "missing_reference_metadata"
 
     candidate_combined = f"{entry.get('title') or ''} {entry.get('uploader') or ''}".strip()
+    cand_norm = _normalize(candidate_combined)
+
+    ref_v = extract_version_info(title)
+    cand_v = extract_version_info(candidate_combined)
+
+    if ref_v["remixer"]:
+        ref_remixer = ref_v["remixer"]
+        cand_remixer = cand_v["remixer"]
+        if cand_remixer and cand_remixer != ref_remixer:
+            return False, score, "remix_mismatch"
+        if ref_remixer not in cand_norm:
+            return False, score, "remix_mismatch"
+
+    if ref_v["version_type"]:
+        ref_vt = ref_v["version_type"]
+        cand_vt = cand_v["version_type"]
+        if ref_vt in {"dub", "vip", "acapella", "instrumental"}:
+            if ref_vt not in cand_norm:
+                return False, score, "version_mismatch"
+        elif cand_vt and cand_vt != ref_vt:
+            if ref_vt not in cand_norm:
+                return False, score, "version_mismatch"
+
     artist_overlap = _token_overlap(artist, candidate_combined)
+    if artist_overlap < 0.6:
+        return False, score, "artist_mismatch"
+
     title_overlap = max(
         _token_overlap(title, candidate_combined),
         _token_overlap(_normalize_descriptors(title), _normalize_descriptors(candidate_combined)),
     )
-    if artist_overlap < 0.6:
-        return False, score, "artist_mismatch"
     if title_overlap < 0.75:
         return False, score, "title_mismatch"
 
@@ -144,6 +254,7 @@ def strict_candidate_match(
     minimum_score = 0.75 if duration is not None else 0.8
     if score < minimum_score:
         return False, score, "score_below_threshold"
+
     return True, score, "accepted"
 
 
@@ -161,27 +272,13 @@ def find_soundcloud_match(
     raw_title: str | None = None,
     catalog_no: str | None = None,
     strict: bool = False,
+    label: str | None = None,
 ) -> str | None:
     """Search SoundCloud for a track matching artist+title/raw_title, gated by duration when known."""
-    if not artist and not title and not raw_title and not catalog_no:
+    if not artist and not title and not raw_title and not catalog_no and not label:
         return None
 
-    queries: list[str] = []
-    seen_q: set[str] = set()
-    for candidate_q in [
-        f"{artist} {title}".strip() if artist and title else None,
-        title.strip() if title else None,
-        strip_noise(raw_title) if raw_title else None,
-        f"{artist} {title} {catalog_no}".strip() if artist and title and catalog_no else None,
-        f"{catalog_no} {title}".strip() if catalog_no and title else None,
-        catalog_no.strip() if catalog_no else None,
-    ]:
-        if candidate_q:
-            norm_q = _normalize(candidate_q)
-            if norm_q and norm_q not in seen_q:
-                seen_q.add(norm_q)
-                queries.append(candidate_q)
-
+    queries = build_search_queries(artist, title, raw_title=raw_title, catalog_no=catalog_no, label=label)
     if not queries:
         return None
 
@@ -220,7 +317,7 @@ def find_soundcloud_match(
             if duration is not None and not strict:
                 if cand_duration is None or abs(cand_duration - duration) > 3:
                     continue
-            score = score_candidate(artist, title, entry, catalog_no=catalog_no)
+            score = score_candidate(artist, title, entry, catalog_no=catalog_no, label=label)
             if strict:
                 continue
             if score >= 0.85:
@@ -241,25 +338,21 @@ def find_soundcloud_match(
 
         if duration is not None:
             if cand_duration is None or abs(cand_duration - duration) > DURATION_TOLERANCE_SECONDS:
-                score = score_candidate(artist, title, entry, catalog_no=catalog_no)
+                score = score_candidate(artist, title, entry, catalog_no=catalog_no, label=label)
                 scored_candidates.append((url, cand_title, cand_duration, score, "duration_mismatch"))
                 continue
 
-        score = score_candidate(artist, title, entry, catalog_no=catalog_no)
+        score = score_candidate(artist, title, entry, catalog_no=catalog_no, label=label)
 
         if strict:
             accepted, score, reason = strict_candidate_match(
-                artist, title, duration, entry, catalog_no=catalog_no,
+                artist, title, duration, entry, catalog_no=catalog_no, label=label,
             )
             scored_candidates.append((url, cand_title, cand_duration, score, reason))
             if accepted and score > best_score:
                 best_score, best_url = score, url
             continue
 
-        # Threshold rules:
-        # If duration close (within ±5s): accept score >= 0.4
-        # If duration known (within ±15s): accept score >= 0.5
-        # If duration unknown: accept score >= 0.55
         if duration is not None and cand_duration is not None and abs(cand_duration - duration) <= DURATION_CLOSE_TOLERANCE_SECONDS:
             min_threshold = 0.4
         elif duration is not None:
@@ -292,6 +385,7 @@ def build_search_queries(
     title: str | None,
     raw_title: str | None = None,
     catalog_no: str | None = None,
+    label: str | None = None,
 ) -> list[str]:
     """Build an ordered list of search queries from most specific/clean to broader fallbacks."""
     queries: list[str] = []
@@ -301,8 +395,17 @@ def build_search_queries(
     clean_artist = re.sub(r"\s*\((?:Topic|Official)\)\s*", "", clean_artist or "", flags=re.IGNORECASE).strip() or None
     clean_title = strip_noise(title) if title else None
     clean_raw = strip_noise(raw_title) if raw_title else None
+    clean_cat = catalog_no.strip() if catalog_no and catalog_no.strip() else None
+    clean_lbl = label.strip() if label and label.strip() else None
+
+    full_title = clean_title or title or clean_raw or raw_title
 
     candidates = [
+        f"{clean_artist} {full_title} {clean_cat}".strip() if clean_artist and full_title and clean_cat else None,
+        f"{clean_artist} {full_title} {clean_lbl}".strip() if clean_artist and full_title and clean_lbl else None,
+        f"{clean_artist} {full_title} {clean_lbl} {clean_cat}".strip() if clean_artist and full_title and clean_lbl and clean_cat else None,
+        f"{clean_lbl} {clean_cat} {full_title}".strip() if clean_lbl and clean_cat and full_title else None,
+        f"{clean_cat} {full_title}".strip() if clean_cat and full_title else None,
         f"{clean_artist} {clean_title}".strip() if clean_artist and clean_title else None,
         f"{artist} {title}".strip() if artist and title else None,
         f"{clean_artist} {title}".strip() if clean_artist and title else None,
@@ -310,7 +413,8 @@ def build_search_queries(
         title.strip() if title else None,
         clean_raw.strip() if clean_raw else None,
         f"{clean_artist} {clean_title} audio".strip() if clean_artist and clean_title else None,
-        f"{catalog_no} {clean_title}".strip() if catalog_no and clean_title else None,
+        f"{clean_cat} {clean_title}".strip() if clean_cat and clean_title else None,
+        catalog_no.strip() if catalog_no else None,
     ]
 
     for cand in candidates:
@@ -432,10 +536,10 @@ def _native_source_label(url: str) -> str:
 def download_multi_source(
     job_dir: Path, job_id: str, native_url: str, artist: str | None, title: str | None,
     duration: int | None, quality: str, settings, started: float, *, proxy: str | None = None,
-    raw_title: str | None = None, catalog_no: str | None = None,
+    raw_title: str | None = None, catalog_no: str | None = None, label: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """SoundCloud first (only if it's a confident match), native source (or YouTube search) last."""
-    search_queries = build_search_queries(artist, title, raw_title=raw_title, catalog_no=catalog_no)
+    search_queries = build_search_queries(artist, title, raw_title=raw_title, catalog_no=catalog_no, label=label)
     is_search_url = "/search" in native_url or "scsearch" in native_url or "search_query" in native_url
 
     # 1. Explicit YouTube URL identifies the exact requested recording
@@ -452,13 +556,13 @@ def download_multi_source(
             _clear_job_dir(job_dir)
             # Try strict SoundCloud match first
             match_url = find_soundcloud_match(
-                artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, strict=True,
+                artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, strict=True, label=label,
             )
             if match_url:
                 try:
                     info = attempt_download(job_dir, match_url, quality, settings, started)
                     accepted, score, reason = strict_candidate_match(
-                        artist, title, duration, info, catalog_no=catalog_no,
+                        artist, title, duration, info, catalog_no=catalog_no, label=label,
                     )
                     if accepted:
                         logger.info("download source scelta job_id=%s source=soundcloud (strict fallback)", job_id)
@@ -492,7 +596,7 @@ def download_multi_source(
             raise exact_error
 
     # 2. SoundCloud match attempt (if not exact YouTube URL)
-    match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)
+    match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, label=label)
     if match_url:
         try:
             info = attempt_download(job_dir, match_url, quality, settings, started)
@@ -505,13 +609,13 @@ def download_multi_source(
         logger.info("download fallback job_id=%s motivo=nessun_match_soundcloud", job_id)
 
     # 3. Direct native URL attempt (ONLY if native_url is a direct media link, NOT a search webpage)
-    label = _native_source_label(native_url)
+    lbl = _native_source_label(native_url)
 
     if not is_search_url:
         try:
             info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
-            logger.info("download source scelta job_id=%s source=%s", job_id, label)
-            return info, label
+            logger.info("download source scelta job_id=%s source=%s", job_id, lbl)
+            return info, lbl
         except Exception as exc:
             logger.info("download fallback attempting ytsearch cascade after native fail job_id=%s detail=%r", job_id, str(exc)[:200])
             _clear_job_dir(job_dir)

@@ -91,7 +91,7 @@ def fake_media(monkeypatch):
         return {"title": "Exclusive Track", "duration": 200}
 
     def fake_multi_source(job_dir, job_id, native_url, artist, title, duration,
-                          quality, settings, started, *, proxy=None, raw_title=None, catalog_no=None):
+                          quality, settings, started, *, proxy=None, raw_title=None, catalog_no=None, label=None, **kwargs):
         _write_audio(Path(job_dir))
         return {"title": title or "Exclusive Track", "duration": 200}, "youtube"
 

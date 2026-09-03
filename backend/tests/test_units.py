@@ -158,7 +158,7 @@ def test_explicit_youtube_failure_uses_only_validated_direct_fallback(monkeypatc
     )
 
     assert source == "soundcloud"
-    assert searches == [{"raw_title": None, "catalog_no": None, "strict": True}]
+    assert searches == [{"raw_title": None, "catalog_no": None, "strict": True, "label": None}]
     assert calls == [
         (requested_url, "http://proxy.invalid:8080"),
         (fallback_url, None),
@@ -219,3 +219,67 @@ def test_youtube_search_page_still_uses_metadata_search(monkeypatch, tmp_path: P
 
     assert source == "youtube"
     assert calls == [("ytsearch5:Artist Track", "http://proxy.invalid:8080")]
+
+
+def test_extract_version_info():
+    v1 = download_engine.extract_version_info("Dennis Ferrer - Hey Hey (Manoo Remix)")
+    assert v1["remixer"] == "manoo"
+    assert v1["version_type"] == "remix"
+
+    v2 = download_engine.extract_version_info("Voice Control (Tale Of Us Edit)")
+    assert v2["remixer"] == "tale of us"
+    assert v2["version_type"] == "edit"
+
+    v3 = download_engine.extract_version_info("Track (Henrik Schwarz Remix)")
+    assert v3["remixer"] == "henrik schwarz"
+    assert v3["version_type"] == "remix"
+
+    v4 = download_engine.extract_version_info("Track (Extended Mix)")
+    assert v4["remixer"] is None
+    assert v4["version_type"] == "extended mix"
+
+
+def test_strict_candidate_remix_mismatch():
+    accepted, score, reason = download_engine.strict_candidate_match(
+        "Dennis Ferrer",
+        "Hey Hey (Manoo Remix)",
+        300,
+        {
+            "title": "Dennis Ferrer - Hey Hey (Tale Of Us Remix)",
+            "uploader": "Afterlife",
+            "duration": 300,
+        },
+    )
+    assert accepted is False
+    assert reason == "remix_mismatch"
+
+
+def test_strict_candidate_remix_match_accepts():
+    accepted, score, reason = download_engine.strict_candidate_match(
+        "Dennis Ferrer",
+        "Hey Hey (Manoo Remix)",
+        300,
+        {
+            "title": "Dennis Ferrer - Hey Hey (Manoo Remix) [OBJ001]",
+            "uploader": "Objectivity",
+            "duration": 302,
+        },
+        catalog_no="OBJ001",
+        label="Objectivity",
+    )
+    assert accepted is True
+    assert reason == "accepted"
+    assert score >= 0.85
+
+
+def test_build_search_queries_preserves_remix_and_label():
+    queries = download_engine.build_search_queries(
+        artist="Dennis Ferrer",
+        title="Hey Hey (Manoo Remix)",
+        catalog_no="OBJ001",
+        label="Objectivity",
+    )
+    assert any("Manoo Remix" in q for q in queries)
+    assert any("OBJ001" in q for q in queries)
+    assert any("Objectivity" in q for q in queries)
+

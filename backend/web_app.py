@@ -642,6 +642,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             info, source = download_multi_source(
                 job_dir, job_id, url, artist, title, duration, quality, settings, started,
                 proxy=ytdlp_proxy(), raw_title=raw_title, catalog_no=catalog_no,
+                label=enrichment.get("label") if enrichment else None,
             )
             t_after_dl = time.monotonic()
             if int(info.get("duration") or 0) > settings.max_duration_seconds:
@@ -826,7 +827,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 for leftover in job_dir.iterdir():
                     if leftover.is_file():
                         leftover.unlink(missing_ok=True)
-                info, _src = download_multi_source(job_dir, job_id, url, artist, title, None, "320", settings, started, proxy=ytdlp_proxy())
+                info, _src = download_multi_source(job_dir, job_id, url, artist, title, None, "320", settings, started, proxy=ytdlp_proxy(), label=enrichment.get("label") if enrichment else None)
             if int(info.get("duration") or 0) > settings.max_duration_seconds:
                 raise yt_dlp.utils.DownloadError("Media duration limit exceeded")
             candidates = [p for p in job_dir.iterdir() if p.is_file() and not p.name.endswith((".part", ".ytdl"))]
