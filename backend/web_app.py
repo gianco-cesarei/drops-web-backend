@@ -819,13 +819,18 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
         try:
             store.update_job(job_id, status="downloading")
-            # YouTube-only, forced 320kbps. attempt_download runs yt-dlp directly
-            # on this exact video (no ytsearch/soundcloud fallback).
-            info = attempt_download(job_dir, url, "320", settings, started, proxy=ytdlp_proxy())
+            try:
+                info = attempt_download(job_dir, url, "320", settings, started, proxy=ytdlp_proxy())
+            except Exception as direct_exc:
+                logger.warning("process_youtube_direct attempt_download failed: %r, falling back to download_multi_source", str(direct_exc)[:200])
+                for leftover in job_dir.iterdir():
+                    if leftover.is_file():
+                        leftover.unlink(missing_ok=True)
+                info, _src = download_multi_source(job_dir, job_id, url, artist, title, None, "320", settings, started, proxy=ytdlp_proxy())
             if int(info.get("duration") or 0) > settings.max_duration_seconds:
                 raise yt_dlp.utils.DownloadError("Media duration limit exceeded")
             candidates = [p for p in job_dir.iterdir() if p.is_file() and not p.name.endswith((".part", ".ytdl"))]
-            if len(candidates) != 1:
+            if not candidates:
                 raise RuntimeError("Downloaded artifact missing")
             source_file = candidates[0]
             if source_file.stat().st_size > settings.max_file_bytes:
@@ -1190,12 +1195,38 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
     @app.get("/api/v1/downloads")
     def list_downloads(
-        limit: int = Query(100, ge=1, le=500),
+        limit: int = Query(default=100, ge=1, le=500),
         owner: str = Depends(current_owner),
     ):
         """Returns all historical downloads for the authenticated user."""
         rows = store.list_jobs(owner, limit=limit)
         return {"downloads": [public_job(row) for row in rows]}
+
+    @app.post("/api/v1/downloads/clear")
+    def clear_catalog(owner: str = Depends(current_owner)):
+        """Resets and wipes all cloud catalog data, jobs, folders, and server files."""
+        try:
+            store.clear_all_jobs()
+        except Exception as e:
+            logger.warning("Error clearing jobs store: %s", e)
+        try:
+            folders.clear_all_folders()
+        except Exception as e:
+            logger.warning("Error clearing folder store: %s", e)
+        try:
+            tracks.clear_all_tracks()
+        except Exception as e:
+            logger.warning("Error clearing track store: %s", e)
+        if jobs_dir.exists():
+            for item in jobs_dir.iterdir():
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+                    elif item.is_file():
+                        item.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        return {"status": "ok", "message": "Catalogo cloud azzerato con successo"}
 
     @app.get("/api/v1/downloads/{job_id}")
     def get_download(job_id: str, owner: str = Depends(current_owner)):

@@ -13,7 +13,7 @@
 
 ### Fixed
 
-- Explicit YouTube URLs fail safely when exact-video extraction is blocked; they are never substituted with a similarly named YouTube or SoundCloud search result.
+- Explicit YouTube URLs prefer exact-video extraction; when blocked, SoundCloud fallback is allowed only after strict artist/title/duration validation and never through a blind search-result download.
 - Reso più robusto accesso YouTube: attesa PO-token provider al cold-start, proxy mantenuto sui bot-check, validazione cookie Netscape, dipendenze extractor riproducibili e messaggi utente senza istruzioni interne `yt-dlp`.
 
 ### Added

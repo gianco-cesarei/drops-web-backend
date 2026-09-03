@@ -120,6 +120,10 @@ class WebStore:
         with self.connect() as db:
             return db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
 
+    def clear_all_jobs(self):
+        with self.connect() as db:
+            db.execute("DELETE FROM jobs")
+
     def list_jobs(self, owner: str, limit: int = 100):
         with self.connect() as db:
             return db.execute(

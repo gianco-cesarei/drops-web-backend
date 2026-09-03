@@ -96,7 +96,7 @@ def test_explicit_youtube_url_never_substitutes_soundcloud(monkeypatch, tmp_path
     assert calls == [(requested_url, "http://proxy.invalid:8080")]
 
 
-def test_explicit_youtube_failure_never_falls_back_to_search(monkeypatch, tmp_path: Path):
+def test_explicit_youtube_failure_without_strict_match_never_falls_back_blindly(monkeypatch, tmp_path: Path):
     requested_url = "https://www.youtube.com/watch?v=JbySohLL3io"
     calls = []
 
@@ -104,11 +104,8 @@ def test_explicit_youtube_failure_never_falls_back_to_search(monkeypatch, tmp_pa
         calls.append((url, proxy))
         raise RuntimeError("youtube verification required")
 
-    def unexpected_soundcloud_search(*args, **kwargs):
-        raise AssertionError("explicit YouTube URL must not search SoundCloud")
-
     monkeypatch.setattr(download_engine, "attempt_download", failing_attempt)
-    monkeypatch.setattr(download_engine, "find_soundcloud_match", unexpected_soundcloud_search)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="youtube verification required"):
         download_engine.download_multi_source(
@@ -125,6 +122,76 @@ def test_explicit_youtube_failure_never_falls_back_to_search(monkeypatch, tmp_pa
         )
 
     assert calls == [(requested_url, "http://proxy.invalid:8080")]
+
+
+def test_explicit_youtube_failure_uses_only_validated_direct_fallback(monkeypatch, tmp_path: Path):
+    requested_url = "https://www.youtube.com/watch?v=JbySohLL3io"
+    fallback_url = "https://soundcloud.com/miles-mercer/voice-control"
+    calls = []
+    searches = []
+
+    def fake_attempt(job_dir, url, quality, settings, started, *, proxy=None):
+        calls.append((url, proxy))
+        if url == requested_url:
+            raise RuntimeError("youtube verification required")
+        assert url == fallback_url
+        return {"title": "Miles Mercer - Voice Control", "duration": 200}
+
+    def fake_match(*args, **kwargs):
+        searches.append(kwargs)
+        return fallback_url
+
+    monkeypatch.setattr(download_engine, "attempt_download", fake_attempt)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", fake_match)
+
+    _, source = download_engine.download_multi_source(
+        tmp_path,
+        "job-fallback",
+        requested_url,
+        "Miles Mercer",
+        "Voice Control",
+        200,
+        "320",
+        SimpleNamespace(),
+        0.0,
+        proxy="http://proxy.invalid:8080",
+    )
+
+    assert source == "soundcloud"
+    assert searches == [{"raw_title": None, "catalog_no": None, "strict": True}]
+    assert calls == [
+        (requested_url, "http://proxy.invalid:8080"),
+        (fallback_url, None),
+    ]
+
+
+def test_strict_candidate_rejects_wrong_artist_even_when_title_and_duration_match():
+    accepted, _, reason = download_engine.strict_candidate_match(
+        "PR 300608",
+        "Days",
+        180,
+        {"title": "Days", "uploader": "Martin Garrix", "duration": 180},
+    )
+
+    assert accepted is False
+    assert reason == "artist_mismatch"
+
+
+def test_strict_candidate_accepts_matching_artist_title_and_duration():
+    accepted, score, reason = download_engine.strict_candidate_match(
+        "Miles Mercer",
+        "Voice Control",
+        200,
+        {
+            "title": "Miles Mercer - Voice Control [FOR07]",
+            "uploader": "Foresight Records",
+            "duration": 204,
+        },
+    )
+
+    assert accepted is True
+    assert score >= 0.75
+    assert reason == "accepted"
 
 
 def test_youtube_search_page_still_uses_metadata_search(monkeypatch, tmp_path: Path):

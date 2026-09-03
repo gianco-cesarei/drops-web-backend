@@ -28,6 +28,19 @@ DOWNLOAD_ABORT_MESSAGES = {
     "Media duration limit exceeded",
 }
 
+YOUTUBE_FALLBACK_ERROR_MARKERS = (
+    "sign in to confirm",
+    "youtube verification required",
+    "video unavailable",
+    "this video is unavailable",
+    "private video",
+    "not available in your country",
+    "age-restricted",
+    "confirm your age",
+    "no video formats found",
+    "requested format is not available",
+)
+
 SOUNDCLOUD_SEARCH_COUNT = 5
 DURATION_TOLERANCE_SECONDS = 15
 DURATION_CLOSE_TOLERANCE_SECONDS = 5
@@ -97,12 +110,55 @@ def score_candidate(
     return max(scores)
 
 
+def strict_candidate_match(
+    artist: str | None,
+    title: str | None,
+    duration: int | None,
+    entry: dict[str, Any],
+    *,
+    catalog_no: str | None = None,
+) -> tuple[bool, float, str]:
+    """Gate fallback candidates tightly enough to avoid substituting another track."""
+    score = score_candidate(artist, title, entry, catalog_no=catalog_no)
+    if not artist or not title:
+        return False, score, "missing_reference_metadata"
+
+    candidate_combined = f"{entry.get('title') or ''} {entry.get('uploader') or ''}".strip()
+    artist_overlap = _token_overlap(artist, candidate_combined)
+    title_overlap = max(
+        _token_overlap(title, candidate_combined),
+        _token_overlap(_normalize_descriptors(title), _normalize_descriptors(candidate_combined)),
+    )
+    if artist_overlap < 0.6:
+        return False, score, "artist_mismatch"
+    if title_overlap < 0.75:
+        return False, score, "title_mismatch"
+
+    candidate_duration = entry.get("duration")
+    if duration is not None:
+        if candidate_duration is None:
+            return False, score, "duration_missing"
+        if abs(float(candidate_duration) - duration) > DURATION_TOLERANCE_SECONDS:
+            return False, score, "duration_mismatch"
+
+    minimum_score = 0.75 if duration is not None else 0.8
+    if score < minimum_score:
+        return False, score, "score_below_threshold"
+    return True, score, "accepted"
+
+
+def youtube_error_allows_fallback(exc: Exception) -> bool:
+    detail = str(exc).casefold()
+    return any(marker in detail for marker in YOUTUBE_FALLBACK_ERROR_MARKERS)
+
+
 def find_soundcloud_match(
     artist: str | None,
     title: str | None,
     duration: int | None,
     raw_title: str | None = None,
     catalog_no: str | None = None,
+    strict: bool = False,
 ) -> str | None:
     """Search SoundCloud for a track matching artist+title/raw_title, gated by duration when known."""
     if not artist and not title and not raw_title and not catalog_no:
@@ -159,10 +215,12 @@ def find_soundcloud_match(
             url = entry.get("webpage_url") or entry.get("url")
             if not url:
                 continue
-            if duration is not None:
+            if duration is not None and not strict:
                 if cand_duration is None or abs(cand_duration - duration) > 3:
                     continue
             score = score_candidate(artist, title, entry, catalog_no=catalog_no)
+            if strict:
+                continue
             if score >= 0.85:
                 logger.info(
                     "soundcloud early exit query=%r url=%s score=%.2f duration_diff=%s elapsed=%.1fs",
@@ -186,6 +244,15 @@ def find_soundcloud_match(
                 continue
 
         score = score_candidate(artist, title, entry, catalog_no=catalog_no)
+
+        if strict:
+            accepted, score, reason = strict_candidate_match(
+                artist, title, duration, entry, catalog_no=catalog_no,
+            )
+            scored_candidates.append((url, cand_title, cand_duration, score, reason))
+            if accepted and score > best_score:
+                best_score, best_url = score, url
+            continue
 
         # Threshold rules:
         # If duration close (within ±5s): accept score >= 0.4
@@ -371,9 +438,43 @@ def download_multi_source(
 
     # 1. Explicit YouTube URL identifies the exact requested recording
     if is_youtube_url(native_url) and not is_search_url:
-        info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
-        logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
-        return info, "youtube"
+        try:
+            info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy)
+            logger.info("download source scelta job_id=%s source=youtube (exact url)", job_id)
+            return info, "youtube"
+        except Exception as exact_error:
+            if any(message in str(exact_error) for message in DOWNLOAD_ABORT_MESSAGES):
+                raise
+            if not youtube_error_allows_fallback(exact_error):
+                raise
+            _clear_job_dir(job_dir)
+            match_url = find_soundcloud_match(
+                artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, strict=True,
+            )
+            if not match_url:
+                logger.info("youtube exact fallback rejected job_id=%s reason=no_strict_match", job_id)
+                raise exact_error
+            try:
+                info = attempt_download(job_dir, match_url, quality, settings, started)
+                accepted, score, reason = strict_candidate_match(
+                    artist, title, duration, info, catalog_no=catalog_no,
+                )
+                if not accepted:
+                    logger.warning(
+                        "youtube exact fallback post-download rejected job_id=%s score=%.2f reason=%s",
+                        job_id, score, reason,
+                    )
+                    _clear_job_dir(job_dir)
+                    raise exact_error
+                logger.info("download source scelta job_id=%s source=soundcloud (strict fallback)", job_id)
+                return info, "soundcloud"
+            except Exception as fallback_error:
+                logger.info(
+                    "youtube exact strict fallback failed job_id=%s detail=%r",
+                    job_id, str(fallback_error)[:200],
+                )
+                _clear_job_dir(job_dir)
+                raise exact_error
 
     # 2. SoundCloud match attempt (if not exact YouTube URL)
     match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no)

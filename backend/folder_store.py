@@ -159,6 +159,11 @@ class FolderStore:
             session.commit()
             return True
 
+    def clear_all_folders(self):
+        with Session(self.engine) as session, session.begin():
+            session.execute(delete(FolderTrack))
+            session.execute(delete(Folder))
+
     def add_track(self, folder_id: str, track_id: str) -> None:
         """Idempotent: adding a track already in the folder is a no-op."""
         with Session(self.engine) as session:

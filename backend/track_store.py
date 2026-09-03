@@ -150,6 +150,10 @@ class TrackStore:
         with Session(self.engine) as session:
             return [row.public() for row in session.scalars(stmt)]
 
+    def clear_all_tracks(self):
+        with Session(self.engine) as session, session.begin():
+            session.execute(delete(Track))
+
     def update_bpm(self, track_id: str, bpm: float | None) -> bool:
         with Session(self.engine) as session:
             row = session.get(Track, track_id)
