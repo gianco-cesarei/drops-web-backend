@@ -41,3 +41,19 @@ breaking→major. Ogni release = tag + CHANGELOG. Tenere allineate le API col fr
 Drops = musica elettronica curata di nicchia. Generi accettati/esclusi e tono: vedi AGENTS.md del
 frontend (fonte brand). Il backend non genera contenuti editoriali ma deve rispettare gli stessi
 confini quando serve dati/metadati.
+
+---
+
+## 6. REGOLE ARCHITETTURALI IMMUTABILI (NON RIMUOVERE MAI - PROTECTED CORE)
+Tutti gli agenti AI (Claude, Codex, Gemini, Cursor) DEVONO RISPETTARE TASSATIVAMENTE QUESTE REGOLE:
+
+1. **MAI RIMUOVERE I FALLBACK MULTI-SORGENTE (`download_multi_source`)**:
+   - I fallback su SoundCloud (`find_soundcloud_match`, `scsearch5`), Bandcamp e Hearthis sono OBBLIGATORI.
+   - Se YouTube richiede verifica bot ("sign in to confirm you're not a bot"), il backend DEVE tentare il fallback su SoundCloud/sorgenti alternative e `scsearch5` prima di dichiarare fallimento.
+
+2. **PERSISTENZA FILE MP3 (ARTIFACT TTL = 30 GIORNI)**:
+   - `artifact_ttl_seconds` in `web_settings.py` deve rimanere a **30 Giorni (`2592000` secondi)**.
+   - Vietato ridurre il TTL a 10 minuti (`600`), i file MP3 scaricati devono rimanere memorizzati per 30 giorni.
+
+3. **TOKEN FIRMATI PER STREAMING CROSS-ORIGIN (`/file-url`)**:
+   - L'endpoint `/api/v1/downloads/{job_id}/file` deve supportare sia cookie sia signed token `?token=...` generati da `/file-url` per consentire lo streaming `<audio crossOrigin="anonymous">` senza errori HTTP 401.
