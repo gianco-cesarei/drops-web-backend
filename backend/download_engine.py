@@ -572,25 +572,71 @@ def download_multi_source(
                     logger.info("youtube exact strict fallback failed job_id=%s detail=%r", job_id, str(fallback_error)[:200])
                     _clear_job_dir(job_dir)
 
-            # Search SoundCloud using title/artist or oEmbed metadata if missing
-            oe_artist, oe_title = artist, title
-            if not oe_title:
+            # 2. Resolve track metadata if artist/title/raw_title is missing
+            ref_artist, ref_title, ref_raw_title, ref_duration = artist, title, raw_title, duration
+            if not ref_title and not ref_raw_title:
+                try:
+                    from media_core import resolve_track
+                    info_dict = resolve_track(native_url)
+                    ref_artist = ref_artist or info_dict.get("artist")
+                    ref_title = ref_title or info_dict.get("title")
+                    ref_raw_title = ref_raw_title or info_dict.get("raw_title")
+                    ref_duration = ref_duration or info_dict.get("duration")
+                except Exception:
+                    pass
+
+            if not ref_title and not ref_raw_title:
                 try:
                     from media_core import _oembed, parse_artist_title
                     oe_data = _oembed("https://www.youtube.com/oembed", native_url)
                     if oe_data and oe_data.get("title"):
-                        oe_artist, oe_title = parse_artist_title(oe_data["title"], fallback_artist=oe_data.get("author_name"))
+                        ref_raw_title = oe_data["title"]
+                        parsed_a, parsed_t = parse_artist_title(oe_data["title"], fallback_artist=oe_data.get("author_name"))
+                        ref_artist = ref_artist or parsed_a
+                        ref_title = ref_title or parsed_t
                 except Exception:
                     pass
 
-            search_query = f"{oe_artist or ''} {oe_title or ''}".strip()
+            # 3. Try strict SoundCloud match
+            match_url = find_soundcloud_match(
+                ref_artist, ref_title, ref_duration, raw_title=ref_raw_title, catalog_no=catalog_no, strict=True, label=label,
+            )
+            if match_url:
+                try:
+                    info = attempt_download(job_dir, match_url, quality, settings, started)
+                    accepted, score, reason = strict_candidate_match(
+                        ref_artist, ref_title, ref_duration, info, catalog_no=catalog_no, label=label,
+                    )
+                    if accepted:
+                        logger.info("download source scelta job_id=%s source=soundcloud (strict fallback)", job_id)
+                        return info, "soundcloud"
+                    _clear_job_dir(job_dir)
+                except Exception as fallback_error:
+                    logger.info("youtube exact strict fallback failed job_id=%s detail=%r", job_id, str(fallback_error)[:200])
+                    _clear_job_dir(job_dir)
+
+            # 4. Try non-strict SoundCloud match (searches & scores candidates)
+            match_url_nonstrict = find_soundcloud_match(
+                ref_artist, ref_title, ref_duration, raw_title=ref_raw_title, catalog_no=catalog_no, strict=False, label=label,
+            )
+            if match_url_nonstrict:
+                try:
+                    info = attempt_download(job_dir, match_url_nonstrict, quality, settings, started)
+                    logger.info("download source scelta job_id=%s source=soundcloud (non-strict fallback url=%s)", job_id, match_url_nonstrict)
+                    return info, "soundcloud"
+                except Exception as sc_fallback_err:
+                    logger.warning("soundcloud non-strict fallback failed job_id=%s detail=%r", job_id, str(sc_fallback_err)[:200])
+                    _clear_job_dir(job_dir)
+
+            # 5. Fallback scsearch on primary query
+            search_query = f"{ref_artist or ''} {ref_title or ''}".strip()
             if search_query:
                 try:
                     info = attempt_download(job_dir, f"scsearch5:{search_query}", quality, settings, started)
                     logger.info("download source scelta job_id=%s source=soundcloud (scsearch fallback query=%r)", job_id, search_query)
                     return info, "soundcloud"
                 except Exception as sc_exc:
-                    logger.warning("scsearch fallback failed job_id=%s detail=%r", job_id, str(sc_exc)[:200])
+                    logger.warning("scsearch fallback failed job_id=%s query=%r detail=%r", job_id, search_query, str(sc_exc)[:200])
                     _clear_job_dir(job_dir)
 
             raise exact_error

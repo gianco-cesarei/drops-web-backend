@@ -283,3 +283,44 @@ def test_build_search_queries_preserves_remix_and_label():
     assert any("OBJ001" in q for q in queries)
     assert any("Objectivity" in q for q in queries)
 
+
+def test_youtube_failure_falls_back_to_nonstrict_soundcloud(monkeypatch, tmp_path: Path):
+    requested_url = "https://www.youtube.com/watch?v=JbySohLL3io"
+    sc_fallback_url = "https://soundcloud.com/artist/track"
+    calls = []
+
+    def fake_attempt(job_dir, url, quality, settings, started, *, proxy=None):
+        calls.append(url)
+        if url == requested_url:
+            raise RuntimeError("Sign in to confirm you’re not a bot")
+        assert url == sc_fallback_url
+        return {"title": "Artist - Track", "duration": 180}
+
+    def fake_match(*args, **kwargs):
+        if kwargs.get("strict"):
+            return None
+        return sc_fallback_url
+
+    monkeypatch.setattr(download_engine, "attempt_download", fake_attempt)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", fake_match)
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+
+    info, source = download_engine.download_multi_source(
+        job_dir=job_dir,
+        job_id="test-fallback",
+        native_url=requested_url,
+        artist="Artist",
+        title="Track",
+        duration=180,
+        quality="320",
+        settings=SimpleNamespace(max_duration_seconds=900, max_file_bytes=100_000_000),
+        started=0.0,
+    )
+
+    assert source == "soundcloud"
+    assert info["title"] == "Artist - Track"
+    assert calls == [requested_url, sc_fallback_url]
+
+
