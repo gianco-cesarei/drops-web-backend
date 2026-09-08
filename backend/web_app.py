@@ -1022,6 +1022,23 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     def health():
         return {"status": "ok"}
 
+    @app.get("/health/diag")
+    def health_diag():
+        cookie_file = ytdlp_cookiefile()
+        secrets_dir = Path("/etc/secrets")
+        secrets_list = []
+        if secrets_dir.is_dir():
+            try:
+                secrets_list = [p.name for p in secrets_dir.iterdir() if p.is_file()]
+            except Exception as e:
+                secrets_list = [f"error_listing: {e}"]
+        return {
+            "status": "ok",
+            "cookies_found": bool(cookie_file),
+            "env_cookies": os.environ.get("DROPS_YTDLP_COOKIES", ""),
+            "secrets_files": secrets_list,
+        }
+
     @app.post("/api/v1/auth/login")
     def login(credentials: LoginRequest, request: Request, response: Response):
         client_key = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for")
