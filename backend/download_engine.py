@@ -514,8 +514,8 @@ def attempt_download(
         CLIENT_TIERS = [
             ["web", "web_safari", "mweb"],
             ["web_safari", "web", "mweb"],
-            ["mweb", "web"],
-            ["tv_downgraded", "tv", "web"],
+            ["mweb", "android"],
+            ["android", "tv_downgraded", "tv"],
         ]
     else:
         # Unauthenticated datacenter IPs: with bgutil POT provider, prioritize web + mweb
@@ -568,9 +568,9 @@ def attempt_download(
             if "proxy" in current_options and proxy_failure:
                 logger.warning("Proxy error/bot detected (%r), dropping proxy for direct fallback", str(exc)[:150])
                 current_options.pop("proxy", None)
-            # If cookies were challenged or invalidated, drop cookies immediately and retry unauthenticated with bgutil POT
+            # If cookies were challenged, invalidated, or triggered reload/signature errors, drop cookies immediately and retry unauthenticated
             if "cookiefile" in current_options and any(marker in exc_str for marker in (
-                "sign in to confirm", "anti-bot", "no longer valid", "verification required",
+                "sign in to confirm", "anti-bot", "no longer valid", "verification required", "page needs to be reloaded", "signature solving failed",
             )):
                 logger.warning("Cookie authentication challenged or invalidated (%r), dropping cookiefile for unauthenticated retry", str(exc)[:150])
                 current_options.pop("cookiefile", None)
