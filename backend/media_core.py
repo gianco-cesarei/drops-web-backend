@@ -73,9 +73,12 @@ def ytdlp_extractor_args(has_cookies: bool | None = None) -> dict:
         yt_args: dict[str, Any] = {
             "player_client": list(AUTHED_YTDLP_PLAYER_CLIENTS),
         }
+        if has_pot:
+            yt_args["fetch_pot"] = ["always"]
     elif has_pot:
         yt_args = {
-            "player_client": ["web", "mweb", "android", "ios", "tv"],
+            "player_client": ["web_embedded", "web", "mweb", "android", "ios"],
+            "fetch_pot": ["always"],
         }
     else:
         yt_args = {

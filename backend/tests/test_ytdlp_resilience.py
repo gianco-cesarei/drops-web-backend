@@ -227,6 +227,7 @@ def test_ytdlp_extractor_args_without_cookies_skips_web(monkeypatch):
     args_pot = media_core.ytdlp_extractor_args(has_cookies=False)
     yt_pot = args_pot["youtube"]
     assert "web" in yt_pot["player_client"]
+    assert yt_pot.get("fetch_pot") == ["always"]
     assert "player_skip" not in yt_pot or "web" not in yt_pot["player_skip"]
 
 
