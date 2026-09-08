@@ -553,7 +553,60 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 result["stream_url"] = f"/api/stream/{row['track_id']}"
         return result
 
-    def promote_to_cloud(owner, artifact, genre_str, artist, title):
+    def get_job_with_fallback(job_id: str, owner: str):
+        row = store.get_job(job_id, owner)
+        if row is not None:
+            return row
+        try:
+            track = tracks.get_track(job_id)
+        except Exception as exc:
+            logger.warning("Error looking up track in fallback for job %s: %s", job_id, exc)
+            return None
+        if not track or track.get("user_id") != owner:
+            return None
+        artist = track.get("artist")
+        title = track.get("title")
+        if artist and title:
+            filename = f"{artist} - {title}.mp3"
+        elif title:
+            filename = f"{title}.mp3"
+        else:
+            filename = f"{job_id}.mp3"
+
+        created_at = track.get("created_at") or time.time()
+        return {
+            "id": track["track_id"],
+            "owner": track["user_id"],
+            "status": "ready",
+            "format": "mp3",
+            "quality": "320k",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "expires_at": created_at + 31536000.0,
+            "title": title,
+            "artist": artist,
+            "cover_url": None,
+            "raw_title": None,
+            "duration": None,
+            "label": None,
+            "year": None,
+            "country": None,
+            "catalog_no": None,
+            "style": None,
+            "discogs_url": None,
+            "bpm": track.get("bpm"),
+            "bpm_confidence": None,
+            "source": "cloud",
+            "filename": filename,
+            "file_path": None,
+            "size": None,
+            "error": None,
+            "track_id": track["track_id"],
+            "r2_key": track["r2_key"],
+            "source_url": "",
+        }
+
+    def promote_to_cloud(owner, artifact, genre_str, artist, title, job_id: str | None = None):
         """Upload a finished MP3 to R2 and write its durable catalog row.
 
         Best-effort by design: returns (track_id, r2_key) on success, or
@@ -574,6 +627,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             track = tracks.create_track(
                 user_id=owner, r2_key=r2_key, artist=artist,
                 title=title, genre=genre_str, bpm=None,
+                track_id=job_id,
             )
         except Exception as exc:
             logger.warning("track catalog insert failed detail=%r", str(exc)[:150])
@@ -704,7 +758,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             # keep working for the rest of the session; the TTL cleanup removes it
             # later. R2 object carries base tags (no BPM); the DB is the source of
             # truth for BPM.
-            track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title)
+            track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title, job_id=job_id)
 
             # Mark ready immediately: the card lands in "scaricati" and the file is
             # downloadable without waiting for BPM analysis.
@@ -898,7 +952,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
             if r2_storage.is_configured():
                 store.update_job(job_id, status="uploading")
-            track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title)
+            track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title, job_id=job_id)
             if track_id:
                 # Cloud is the source of truth: no local file endpoint, and the
                 # local temp file is dropped after BPM (see _bpm_and_cleanup).
@@ -1147,7 +1201,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
     @app.get("/api/download/youtube-direct/{task_id}")
     def youtube_direct_status(task_id: str, owner: str = Depends(current_owner)):
-        row = store.get_job(task_id, owner)
+        row = get_job_with_fallback(task_id, owner)
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
         job = public_job(row)
@@ -1271,7 +1325,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
     @app.get("/api/v1/downloads/{job_id}")
     def get_download(job_id: str, owner: str = Depends(current_owner)):
-        row = store.get_job(job_id, owner)
+        row = get_job_with_fallback(job_id, owner)
         if not row:
             raise HTTPException(status_code=404, detail="Download not found")
         return public_job(row)
@@ -1283,7 +1337,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         the "download whole folder" zip export) with crossOrigin="anonymous" -
         i.e. WITHOUT sending the session cookie. Ownership is checked here, so
         the token can only ever point at a file the caller already owns."""
-        row = store.get_job(job_id, owner)
+        row = get_job_with_fallback(job_id, owner)
         if not row:
             raise HTTPException(status_code=404, detail="Download not found")
         token = issue_file_token(job_id, owner)
@@ -1328,7 +1382,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             owner = verify_session(drops_session)
             refresh_cookie = True
 
-        row = store.get_job(job_id, owner)
+        row = get_job_with_fallback(job_id, owner)
         if not row:
             raise HTTPException(status_code=404, detail="Download not found")
 

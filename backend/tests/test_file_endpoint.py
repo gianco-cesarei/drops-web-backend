@@ -220,3 +220,61 @@ def test_preflight_options_wildcard(make_client):
     assert resp.headers["access-control-allow-origin"] == "*"
     assert "GET" in resp.headers["access-control-allow-methods"]
     assert "Range" in resp.headers["access-control-allow-headers"]
+
+
+def test_job_lookup_tracks_fallback(make_client):
+    """When store.get_job returns None (e.g. SQLite wiped), check tracks catalog."""
+    client, app = make_client()
+    
+    # 1. Create a track in tracks store only (NOT in SQLite jobs store)
+    app.state.tracks.create_track(
+        track_id="test-fallback-job-123",
+        user_id="dj",
+        r2_key="dj/House/Test Artist - Test Track.mp3",
+        artist="Test Artist",
+        title="Test Track",
+        genre="House",
+        bpm=124.0,
+    )
+    
+    assert app.state.store.get_job("test-fallback-job-123", "dj") is None
+    
+    # 2. Test GET /api/v1/downloads/{job_id}
+    resp = client.get("/api/v1/downloads/test-fallback-job-123")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == "test-fallback-job-123"
+    assert body["status"] == "ready"
+    assert body["artist"] == "Test Artist"
+    assert body["title"] == "Test Track"
+    assert body["r2_key"] == "dj/House/Test Artist - Test Track.mp3"
+    assert body["bpm"] == 124.0
+
+    # 3. Test GET /api/v1/downloads/{job_id}/file-url
+    url_resp = client.get("/api/v1/downloads/test-fallback-job-123/file-url")
+    assert url_resp.status_code == 200, url_resp.text
+    token = url_resp.json()["token"]
+    assert token
+
+    # 4. Test GET /api/v1/downloads/{job_id}/file with token (cookieless)
+    client.cookies.clear()
+    file_resp = client.get(f"/api/v1/downloads/test-fallback-job-123/file?token={token}")
+    # Without mock R2 file uploaded, fallback to _serve_r2_file will raise 404 because file isn't in R2,
+    # but the job lookup itself succeeded (did not fail at 404 Download not found).
+    assert file_resp.status_code == 404
+    assert file_resp.json()["detail"] == "File temporaneo scaduto sul server. Rilancia il download dalla sorgente."
+
+    # 5. Ownership isolation: another user cannot access this track
+    # Re-authenticate as "dj" (since cookies were cleared in step 4)
+    login_resp = client.post("/api/v1/auth/login", json={"username": "dj", "password": "correct horse battery staple"})
+    assert login_resp.status_code == 200
+
+    app.state.tracks.create_track(
+        track_id="other-user-track-999",
+        user_id="other_user",
+        r2_key="other/Track.mp3",
+    )
+    # Logged in as "dj", trying to access "other_user"'s track
+    resp_other = client.get("/api/v1/downloads/other-user-track-999")
+    assert resp_other.status_code == 404
+
