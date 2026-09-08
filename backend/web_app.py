@@ -1108,37 +1108,6 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "secrets_files": secrets_list,
         }
 
-    @app.get("/health/diag/test-download")
-    def health_diag_test_download(
-        url: str = "https://www.youtube.com/watch?v=8UEt-jED_20",
-        allow_proxy: bool = True,
-    ):
-        import tempfile
-        import shutil
-        test_dir = Path(tempfile.mkdtemp(prefix="diag_dl_"))
-        proxy = ytdlp_proxy() if allow_proxy else None
-        try:
-            from download_engine import attempt_download
-            started = time.monotonic()
-            info = attempt_download(test_dir, url, "mp3", settings, started, proxy=proxy)
-            files = [f.name for f in test_dir.iterdir() if f.is_file()]
-            return {
-                "ok": True,
-                "title": info.get("title"),
-                "files": files,
-                "proxy_used": bool(proxy),
-                "duration": time.monotonic() - started,
-            }
-        except Exception as e:
-            return {
-                "ok": False,
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "proxy_used": bool(proxy),
-            }
-        finally:
-            shutil.rmtree(test_dir, ignore_errors=True)
-
     @app.get("/health/diag/test-extract")
     def health_diag_test_extract(url: str = "https://www.youtube.com/watch?v=qPcX4F5J4fk"):
         results: dict[str, Any] = {}
