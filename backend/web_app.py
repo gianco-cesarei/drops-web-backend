@@ -1104,6 +1104,95 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "secrets_files": secrets_list,
         }
 
+    @app.get("/health/diag/test-extract")
+    def health_diag_test_extract(url: str = "https://www.youtube.com/watch?v=qPcX4F5J4fk"):
+        results: dict[str, Any] = {}
+        cookie_file = ytdlp_cookiefile()
+
+        # Test A: Unauthenticated Android client
+        opts_android = {
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
+            "skip_download": True,
+            "format": "bestaudio/best",
+            "extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["web"]}},
+        }
+        try:
+            with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_android) as ydl:
+                info = ydl.extract_info(url, download=False)
+                results["android_no_cookies"] = {
+                    "ok": True,
+                    "title": info.get("title") if info else None,
+                    "formats_count": len(info.get("formats", [])) if info else 0,
+                    "chosen_format": info.get("format_id") if info else None,
+                }
+        except Exception as e:
+            results["android_no_cookies"] = {"ok": False, "error": str(e)[:300]}
+
+        # Test B: Authenticated web with cookies (if available)
+        if cookie_file:
+            opts_web = {
+                "quiet": True,
+                "no_warnings": True,
+                "nocheckcertificate": True,
+                "skip_download": True,
+                "format": "bestaudio/best",
+                "cookiefile": cookie_file,
+                "user_agent": ytdlp_user_agent(has_cookies=True),
+                "extractor_args": ytdlp_extractor_args(has_cookies=True),
+            }
+            try:
+                with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_web) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    results["web_with_cookies"] = {
+                        "ok": True,
+                        "title": info.get("title") if info else None,
+                        "formats_count": len(info.get("formats", [])) if info else 0,
+                    }
+            except Exception as e:
+                results["web_with_cookies"] = {"ok": False, "error": str(e)[:300]}
+
+        # Test C: Unauthenticated mweb client
+        opts_mweb = {
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
+            "skip_download": True,
+            "format": "bestaudio/best",
+            "extractor_args": {"youtube": {"player_client": ["mweb"], "player_skip": ["web"]}},
+        }
+        try:
+            with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_mweb) as ydl:
+                info = ydl.extract_info(url, download=False)
+                results["mweb_no_cookies"] = {
+                    "ok": True,
+                    "title": info.get("title") if info else None,
+                }
+        except Exception as e:
+            results["mweb_no_cookies"] = {"ok": False, "error": str(e)[:300]}
+
+        # Test D: TV client
+        opts_tv = {
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
+            "skip_download": True,
+            "format": "bestaudio/best",
+            "extractor_args": {"youtube": {"player_client": ["tv"], "player_skip": ["web"]}},
+        }
+        try:
+            with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_tv) as ydl:
+                info = ydl.extract_info(url, download=False)
+                results["tv_no_cookies"] = {
+                    "ok": True,
+                    "title": info.get("title") if info else None,
+                }
+        except Exception as e:
+            results["tv_no_cookies"] = {"ok": False, "error": str(e)[:300]}
+
+        return {"url": url, "results": results}
+
     @app.post("/api/v1/auth/login")
     def login(credentials: LoginRequest, request: Request, response: Response):
         client_key = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for")
