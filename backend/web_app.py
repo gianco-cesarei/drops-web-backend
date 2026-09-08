@@ -554,9 +554,38 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         return result
 
     def get_job_with_fallback(job_id: str, owner: str):
-        row = store.get_job(job_id, owner)
+        row = None
+        try:
+            row = store.get_job(job_id, owner)
+        except Exception as exc:
+            logger.warning("Error getting job %s from store: %s", job_id, exc)
+            row = None
+
         if row is not None:
+            # If local file is missing on ephemeral disk and r2_key is missing, attempt fallback to tracks table
+            has_local = False
+            file_path = row["file_path"]
+            if file_path:
+                try:
+                    p = Path(file_path).resolve()
+                    expected_root = (jobs_dir / job_id).resolve()
+                    has_local = p.parent == expected_root and p.is_file()
+                except Exception:
+                    has_local = False
+            if not has_local and not row["r2_key"]:
+                try:
+                    fallback_id = row["track_id"] or job_id
+                    t = tracks.get_track(fallback_id)
+                    if t and t.get("r2_key") and (t.get("user_id") == owner or not t.get("user_id")):
+                        row_dict = dict(row)
+                        row_dict["r2_key"] = t["r2_key"]
+                        if not row_dict.get("track_id"):
+                            row_dict["track_id"] = t.get("track_id")
+                        return row_dict
+                except Exception as exc:
+                    logger.warning("Error fetching track fallback for row %s: %s", job_id, exc)
             return row
+
         try:
             track = tracks.get_track(job_id)
         except Exception as exc:
@@ -1354,7 +1383,11 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         the "download whole folder" zip export) with crossOrigin="anonymous" -
         i.e. WITHOUT sending the session cookie. Ownership is checked here, so
         the token can only ever point at a file the caller already owns."""
-        row = get_job_with_fallback(job_id, owner)
+        try:
+            row = get_job_with_fallback(job_id, owner)
+        except Exception as exc:
+            logger.warning("Error looking up job in get_file_url for %s: %s", job_id, exc)
+            row = None
         if not row:
             raise HTTPException(status_code=404, detail="Download not found")
         token = issue_file_token(job_id, owner)
@@ -1363,10 +1396,13 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
         host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
         base = f"{scheme}://{host}"
+        row_data = dict(row)
         return {
             "url": f"{base}/api/v1/downloads/{job_id}/file?token={token}",
             "token": token,
             "expires_in": settings.file_token_ttl_seconds,
+            "filename": row_data.get("filename") or f"{job_id}.mp3",
+            "source_url": row_data.get("source_url") or "",
         }
 
     @app.api_route("/api/v1/downloads/{job_id}/file", methods=["GET", "HEAD"])
@@ -1399,7 +1435,11 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             owner = verify_session(drops_session)
             refresh_cookie = True
 
-        row = get_job_with_fallback(job_id, owner)
+        try:
+            row = get_job_with_fallback(job_id, owner)
+        except Exception as exc:
+            logger.warning("Error looking up job in get_file for %s: %s", job_id, exc)
+            row = None
         if not row:
             raise HTTPException(status_code=404, detail="Download not found")
 
@@ -1423,7 +1463,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 result = _serve_r2_file(row["r2_key"], filename, content_type, range_header, is_head)
             except HTTPException:
                 raise
-            except Exception:
+            except Exception as exc:
+                logger.warning("R2 serve failed for key %s: %s", row.get("r2_key"), exc)
                 result = None
         if result is None:
             raise HTTPException(status_code=404, detail="File temporaneo scaduto sul server. Rilancia il download dalla sorgente.")
