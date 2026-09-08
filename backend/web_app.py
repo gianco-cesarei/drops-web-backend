@@ -33,6 +33,7 @@ from discogs_agent import DiscogsClient
 from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
 from folder_store import FolderStore
 from media_core import (
+    YTDLP_LOCK,
     is_supported_url,
     is_youtube_url,
     public_ytdlp_error,
