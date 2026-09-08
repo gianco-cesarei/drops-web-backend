@@ -477,6 +477,7 @@ def attempt_download(
 
     # Upgrade single-result ytsearch queries to ytsearch5 to allow inspecting alternative candidates
     target_url = re.sub(r"^ytsearch[1-4]:", "ytsearch5:", url)
+    is_search = bool(re.search(r"^(?:yt|sc)search\d*:", target_url))
     is_yt = is_youtube_url(target_url) or "ytsearch" in target_url
     cookies = None if force_unauth else ytdlp_cookiefile()
     has_cookies = False if force_unauth else bool(cookies)
@@ -497,7 +498,10 @@ def attempt_download(
         "format": "bestaudio/best" if is_yt else "bestaudio[acodec=mp3][protocol^=http]/bestaudio[acodec=mp3]/bestaudio/best",
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": AUDIO_QUALITY[quality]}],
         "outtmpl": str(job_dir / "source.%(ext)s"),
-        "quiet": True, "no_warnings": True, "noplaylist": True,
+        "quiet": True, "no_warnings": True,
+        "noplaylist": not is_search,
+        "max_downloads": 1 if is_search else None,
+        "ignoreerrors": is_search,
         "max_filesize": settings.max_file_bytes,
         "match_filter": duration_filter,
         "socket_timeout": 15,
@@ -602,6 +606,12 @@ def attempt_download(
             YTDLP_LOCK.release()
     if info is None:
         raise last_extract_error or RuntimeError("Download failed")
+    if isinstance(info, dict) and "entries" in info:
+        entries = [e for e in (info.get("entries") or []) if e and isinstance(e, dict)]
+        if entries:
+            info = entries[0]
+        else:
+            raise last_extract_error or RuntimeError("No playable search candidates found")
     return info
 
 
