@@ -1185,6 +1185,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "nocheckcertificate": True,
             "skip_download": True,
             "format": "bestaudio/best",
+            "user_agent": ytdlp_user_agent(),
             "extractor_args": ytdlp_extractor_args(has_cookies=False),
             "logger": diag_log_unauth,
         }

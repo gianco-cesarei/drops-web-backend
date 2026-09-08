@@ -233,7 +233,7 @@ def test_ytdlp_extractor_args_without_cookies_skips_web(monkeypatch):
 
 def test_ytdlp_user_agent_matching_and_override(monkeypatch):
     monkeypatch.delenv("DROPS_YTDLP_USER_AGENT", raising=False)
-    assert media_core.ytdlp_user_agent(has_cookies=False) is None
+    assert "Mozilla/5.0" in (media_core.ytdlp_user_agent(has_cookies=False) or "")
     assert "Mozilla/5.0" in (media_core.ytdlp_user_agent(has_cookies=True) or "")
 
     monkeypatch.setenv("DROPS_YTDLP_USER_AGENT", "CustomUserAgent/2.0")

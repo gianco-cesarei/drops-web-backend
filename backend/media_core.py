@@ -38,21 +38,16 @@ DEFAULT_DESKTOP_USER_AGENT = (
 )
 
 
-def ytdlp_user_agent(has_cookies: bool | None = None) -> str | None:
+def ytdlp_user_agent(has_cookies: bool | None = None) -> str:
     """User-Agent header for yt-dlp.
 
-    When session cookies are present (typically exported from a desktop browser),
-    YouTube expects matching desktop headers to validate authenticated Innertube sessions.
-    Can be explicitly overridden via the DROPS_YTDLP_USER_AGENT environment variable.
+    Always use modern desktop Chrome User-Agent to match the fingerprint
+    expected by Innertube and the bgutil BotGuard PO token provider.
     """
     custom_ua = os.environ.get("DROPS_YTDLP_USER_AGENT", "").strip()
     if custom_ua:
         return custom_ua
-    if has_cookies is None:
-        has_cookies = bool(ytdlp_cookiefile())
-    if has_cookies:
-        return DEFAULT_DESKTOP_USER_AGENT
-    return None
+    return DEFAULT_DESKTOP_USER_AGENT
 
 
 def ytdlp_extractor_args(has_cookies: bool | None = None) -> dict:
@@ -138,6 +133,8 @@ def ytdlp_cookiefile() -> str | None:
     1. DROPS_YTDLP_COOKIES env var (file path or raw Netscape cookie text)
     2. Auto-discovery of Render Secret Files in /etc/secrets/ (cookies.txt, etc.)
     """
+    if os.environ.get("DROPS_DISABLE_COOKIES", "").strip().lower() in ("1", "true", "yes"):
+        return None
     candidates: list[str] = []
     env_val = os.environ.get("DROPS_YTDLP_COOKIES", "").strip()
     if env_val:
