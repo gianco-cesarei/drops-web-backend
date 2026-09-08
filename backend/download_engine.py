@@ -522,16 +522,16 @@ def attempt_download(
     if has_cookies:
         # Authenticated cookies (from desktop browser) match desktop 'web' client.
         CLIENT_TIERS = [
-            ["web", "web_embedded"],
-            ["mweb", "android"],
+            ["web", "web_embedded", "web_remix"],
+            ["web_remix", "android"],
             ["android", "mweb"],
             ["android", "ios"],
         ]
     else:
         # Unauthenticated datacenter IPs: with bgutil POT provider, prioritize web + web_embedded
         CLIENT_TIERS = [
-            ["web", "web_embedded"],
-            ["mweb", "android"],
+            ["web", "web_embedded", "web_remix"],
+            ["web_remix", "android"],
             ["android", "mweb"],
             ["tv", "android"],
         ]

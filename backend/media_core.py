@@ -29,8 +29,8 @@ YTDLP_LOCK = threading.Lock()
 _COOKIE_FILE_LOCK = threading.Lock()
 
 
-AUTHED_YTDLP_PLAYER_CLIENTS = ["web", "web_embedded", "mweb"]
-UNAUTH_YTDLP_PLAYER_CLIENTS = ["web", "web_embedded", "mweb", "android", "ios", "tv"]
+AUTHED_YTDLP_PLAYER_CLIENTS = ["web", "web_embedded", "web_remix", "mweb", "android"]
+UNAUTH_YTDLP_PLAYER_CLIENTS = ["web", "web_embedded", "web_remix", "mweb", "android", "ios", "tv"]
 YTDLP_PLAYER_CLIENTS = UNAUTH_YTDLP_PLAYER_CLIENTS
 
 DEFAULT_DESKTOP_USER_AGENT = (
@@ -80,7 +80,7 @@ def ytdlp_extractor_args(has_cookies: bool | None = None) -> dict:
             yt_args["fetch_pot"] = ["always"]
     elif has_pot:
         yt_args = {
-            "player_client": ["web", "web_embedded", "mweb"],
+            "player_client": ["web", "web_embedded", "web_remix", "mweb", "android"],
             "fetch_pot": ["always"],
         }
     else:
