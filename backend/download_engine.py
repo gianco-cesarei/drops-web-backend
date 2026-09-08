@@ -478,10 +478,10 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
     if src_addr:
         options["source_address"] = src_addr
     CLIENT_TIERS = [
-        ["tv", "mweb", "android", "ios"],
-        ["web_creator", "tv_embedded", "tv"],
-        ["web_embedded", "android", "mweb"],
-        ["mweb", "web", "android"],
+        ["android", "mweb"],
+        ["mweb", "android"],
+        ["tv", "android"],
+        ["android", "tv", "ios"],
     ]
 
     info = None
@@ -489,8 +489,14 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
     current_options = dict(options)
 
     for attempt in range(1, 5):
-        # Use default extractor args from media_core (includes PO token, player_skip web, etc.)
-        current_options["extractor_args"] = dict(options.get("extractor_args") or {})
+        # Rotate player clients across attempts
+        client_tier = CLIENT_TIERS[attempt - 1] if attempt <= len(CLIENT_TIERS) else ["android", "mweb"]
+        extractor_args = dict(options.get("extractor_args") or {})
+        if "youtube" in extractor_args:
+            yt_args = dict(extractor_args["youtube"])
+            yt_args["player_client"] = list(client_tier)
+            extractor_args["youtube"] = yt_args
+        current_options["extractor_args"] = extractor_args
 
         # Format fallback on later attempts if rigid format fails
         if attempt >= 3:

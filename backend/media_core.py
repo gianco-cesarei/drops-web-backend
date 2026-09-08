@@ -26,7 +26,7 @@ YTDLP_LOCK = threading.Lock()
 _COOKIE_FILE_LOCK = threading.Lock()
 
 
-YTDLP_PLAYER_CLIENTS = ["ios", "mweb", "android", "tv_embedded"]
+YTDLP_PLAYER_CLIENTS = ["android", "mweb", "tv", "ios"]
 
 
 def ytdlp_extractor_args() -> dict:
