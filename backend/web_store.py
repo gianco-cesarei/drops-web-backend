@@ -6,7 +6,7 @@ from pathlib import Path
 # A job counts against queue capacity from the instant it's recognized until
 # it's terminal (ready/error) - "queued" no longer exists as a distinct
 # status because recognition now happens synchronously before insert.
-ACTIVE_STATUSES = ("recognized", "enriching", "downloading")
+ACTIVE_STATUSES = ("recognized", "enriching", "downloading", "uploading")
 
 
 class WebStore:

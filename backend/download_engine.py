@@ -41,6 +41,8 @@ YOUTUBE_FALLBACK_ERROR_MARKERS = (
     "requested format is not available",
 )
 
+YOUTUBE_NO_RETRY_MARKERS = YOUTUBE_FALLBACK_ERROR_MARKERS
+
 SOUNDCLOUD_SEARCH_COUNT = 5
 DURATION_TOLERANCE_SECONDS = 15
 DURATION_CLOSE_TOLERANCE_SECONDS = 5
@@ -273,6 +275,8 @@ def find_soundcloud_match(
     catalog_no: str | None = None,
     strict: bool = False,
     label: str | None = None,
+    *,
+    proxy: str | None = None,
 ) -> str | None:
     """Search SoundCloud for a track matching artist+title/raw_title, gated by duration when known."""
     if not artist and not title and not raw_title and not catalog_no and not label:
@@ -291,6 +295,8 @@ def find_soundcloud_match(
         "socket_timeout": 15,
         "extractor_args": ytdlp_extractor_args(),
     }
+    if proxy:
+        options["proxy"] = proxy
 
     all_entries: dict[str, dict[str, Any]] = {}
     for query in queries:
@@ -446,11 +452,12 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
 
     # Upgrade single-result ytsearch queries to ytsearch5 to allow inspecting alternative candidates
     target_url = re.sub(r"^ytsearch[1-4]:", "ytsearch5:", url)
+    is_yt = is_youtube_url(target_url) or "ytsearch" in target_url
 
     options = {
-        # Prefer a native MP3 stream (SoundCloud serves http_mp3/hls_mp3) so
-        # FFmpegExtractAudio remuxes with -c copy instead of re-encoding.
-        "format": "bestaudio[acodec=mp3][protocol^=http]/bestaudio[acodec=mp3]/bestaudio/best",
+        # YouTube audio streams are Opus/AAC (never native MP3), so demand bestaudio/best
+        # directly on YouTube. For SoundCloud/others, prefer native MP3 when available.
+        "format": "bestaudio/best" if is_yt else "bestaudio[acodec=mp3][protocol^=http]/bestaudio[acodec=mp3]/bestaudio/best",
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": AUDIO_QUALITY[quality]}],
         "outtmpl": str(job_dir / "source.%(ext)s"),
         "quiet": True, "no_warnings": True, "noplaylist": True,
@@ -490,8 +497,11 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         if attempt >= 3:
             current_options["format"] = "bestaudio/best"
 
+        acquired = YTDLP_LOCK.acquire(timeout=max(1.0, settings.max_duration_seconds - (time.monotonic() - started)))
+        if not acquired:
+            raise yt_dlp.utils.DownloadError("Download worker lock timeout")
         try:
-            with YTDLP_LOCK, yt_dlp.YoutubeDL(current_options) as ydl:
+            with yt_dlp.YoutubeDL(current_options) as ydl:
                 info = ydl.extract_info(target_url, download=True)
             break
         except Exception as exc:
@@ -507,10 +517,16 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
             if "proxy" in current_options and proxy_failure:
                 logger.warning("Proxy error/bot detected (%r), dropping proxy for direct fallback", str(exc)[:150])
                 current_options.pop("proxy", None)
-            if str(exc) in DOWNLOAD_ABORT_MESSAGES or attempt == 4:
+            if (
+                str(exc) in DOWNLOAD_ABORT_MESSAGES
+                or any(marker in exc_str for marker in YOUTUBE_NO_RETRY_MARKERS)
+                or attempt == 4
+            ):
                 raise
             logger.warning("download retrying attempt=%s client_tier=%s error=%r", attempt, client_tier, str(exc)[:150])
             time.sleep(attempt * 0.5)
+        finally:
+            YTDLP_LOCK.release()
     if info is None:
         raise last_extract_error or RuntimeError("Download failed")
     return info
@@ -554,37 +570,8 @@ def download_multi_source(
             if not youtube_error_allows_fallback(exact_error):
                 raise
             _clear_job_dir(job_dir)
-            # Try strict SoundCloud match first
-            match_url = find_soundcloud_match(
-                artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, strict=True, label=label,
-            )
-            if match_url:
-                try:
-                    info = attempt_download(job_dir, match_url, quality, settings, started)
-                    accepted, score, reason = strict_candidate_match(
-                        artist, title, duration, info, catalog_no=catalog_no, label=label,
-                    )
-                    if accepted:
-                        logger.info("download source scelta job_id=%s source=soundcloud (strict fallback)", job_id)
-                        return info, "soundcloud"
-                    _clear_job_dir(job_dir)
-                except Exception as fallback_error:
-                    logger.info("youtube exact strict fallback failed job_id=%s detail=%r", job_id, str(fallback_error)[:200])
-                    _clear_job_dir(job_dir)
-
-            # 2. Resolve track metadata if artist/title/raw_title is missing
+            # Pre-resolve track metadata via lightweight oEmbed if artist/title/raw_title is missing
             ref_artist, ref_title, ref_raw_title, ref_duration = artist, title, raw_title, duration
-            if not ref_title and not ref_raw_title:
-                try:
-                    from media_core import resolve_track
-                    info_dict = resolve_track(native_url)
-                    ref_artist = ref_artist or info_dict.get("artist")
-                    ref_title = ref_title or info_dict.get("title")
-                    ref_raw_title = ref_raw_title or info_dict.get("raw_title")
-                    ref_duration = ref_duration or info_dict.get("duration")
-                except Exception:
-                    pass
-
             if not ref_title and not ref_raw_title:
                 try:
                     from media_core import _oembed, parse_artist_title
@@ -597,9 +584,20 @@ def download_multi_source(
                 except Exception:
                     pass
 
-            # 3. Try strict SoundCloud match
+            if not ref_title and not ref_raw_title:
+                try:
+                    from media_core import resolve_track
+                    info_dict = resolve_track(native_url)
+                    ref_artist = ref_artist or info_dict.get("artist")
+                    ref_title = ref_title or info_dict.get("title")
+                    ref_raw_title = ref_raw_title or info_dict.get("raw_title")
+                    ref_duration = ref_duration or info_dict.get("duration")
+                except Exception:
+                    pass
+
+            # Try strict SoundCloud match first with resolved metadata
             match_url = find_soundcloud_match(
-                ref_artist, ref_title, ref_duration, raw_title=ref_raw_title, catalog_no=catalog_no, strict=True, label=label,
+                ref_artist, ref_title, ref_duration, raw_title=ref_raw_title, catalog_no=catalog_no, strict=True, label=label, proxy=proxy,
             )
             if match_url:
                 try:
@@ -617,7 +615,7 @@ def download_multi_source(
 
             # 4. Try non-strict SoundCloud match (searches & scores candidates)
             match_url_nonstrict = find_soundcloud_match(
-                ref_artist, ref_title, ref_duration, raw_title=ref_raw_title, catalog_no=catalog_no, strict=False, label=label,
+                ref_artist, ref_title, ref_duration, raw_title=ref_raw_title, catalog_no=catalog_no, strict=False, label=label, proxy=proxy,
             )
             if match_url_nonstrict:
                 try:
@@ -642,7 +640,7 @@ def download_multi_source(
             raise exact_error
 
     # 2. SoundCloud match attempt (if not exact YouTube URL)
-    match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, label=label)
+    match_url = find_soundcloud_match(artist, title, duration, raw_title=raw_title, catalog_no=catalog_no, label=label, proxy=proxy)
     if match_url:
         try:
             info = attempt_download(job_dir, match_url, quality, settings, started)

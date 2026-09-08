@@ -155,8 +155,10 @@ def _write_private_cookie_copy(content: str) -> str:
 def public_ytdlp_error(exc: Exception) -> str:
     """Return stable user-facing text without leaking yt-dlp CLI guidance."""
     detail = str(exc).casefold()
+    if "all download candidates failed" in detail or "nessuna sorgente" in detail:
+        return "Nessuna sorgente audio valida trovata per questo brano sia su YouTube sia su SoundCloud."
     if "sign in to confirm you’re not a bot" in detail or "sign in to confirm you're not a bot" in detail:
-        return "YouTube richiede una verifica temporanea. Riprova più tardi."
+        return "YouTube richiede una verifica temporanea (anti-bot). Corrispondenza non trovata su SoundCloud."
     if "private video" in detail:
         return "Video YouTube privato o non accessibile."
     if "video unavailable" in detail or "this video is unavailable" in detail:
@@ -292,7 +294,7 @@ def _oembed(endpoint: str, url: str) -> dict | None:
         return None
 
 
-def _resolve_via_ytdlp(url: str) -> dict:
+def _resolve_via_ytdlp(url: str, proxy: str | None = None) -> dict:
     """Metadata-only fallback when oEmbed can't answer (private/unlisted/oembed-less sources).
 
     skip_download=True never resolves a playable stream format, so this never
@@ -305,6 +307,9 @@ def _resolve_via_ytdlp(url: str) -> dict:
     cookies = ytdlp_cookiefile()
     if cookies:
         options["cookiefile"] = cookies
+    proxy_val = proxy or ytdlp_proxy()
+    if proxy_val:
+        options["proxy"] = proxy_val
     try:
         with YTDLP_LOCK, yt_dlp.YoutubeDL(options) as ydl:
             # extract_info can return None without raising on some

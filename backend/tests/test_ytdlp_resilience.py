@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yt_dlp
 
 import download_engine
@@ -48,7 +49,7 @@ def test_bot_check_has_clean_user_message():
     assert "--cookies" not in message
 
 
-def test_proxy_survives_bot_check_retry(monkeypatch, tmp_path: Path):
+def test_bot_check_is_not_retried_before_multi_source_fallback(monkeypatch, tmp_path: Path):
     options_seen = []
 
     class FakeYoutubeDL:
@@ -66,9 +67,7 @@ def test_proxy_survives_bot_check_retry(monkeypatch, tmp_path: Path):
         def extract_info(self, _url, download):
             assert download is True
             self.__class__.calls += 1
-            if self.__class__.calls == 1:
-                raise yt_dlp.utils.DownloadError("Sign in to confirm you’re not a bot")
-            return {"title": "Track", "duration": 120}
+            raise yt_dlp.utils.DownloadError("Sign in to confirm you’re not a bot")
 
     monkeypatch.setattr(download_engine.yt_dlp, "YoutubeDL", FakeYoutubeDL)
     monkeypatch.setattr(download_engine.time, "sleep", lambda _seconds: None)
@@ -78,14 +77,39 @@ def test_proxy_survives_bot_check_retry(monkeypatch, tmp_path: Path):
     job_dir.mkdir()
     settings = SimpleNamespace(max_duration_seconds=900, max_file_bytes=100_000_000)
 
-    result = download_engine.attempt_download(
-        job_dir, "https://youtube.com/watch?v=abc", "320", settings, 0.0,
-        proxy="http://proxy.example:8080",
-    )
+    with pytest.raises(yt_dlp.utils.DownloadError, match="confirm"):
+        download_engine.attempt_download(
+            job_dir, "https://youtube.com/watch?v=abc", "320", settings, 0.0,
+            proxy="http://proxy.example:8080",
+        )
 
-    assert result["title"] == "Track"
+    assert FakeYoutubeDL.calls == 1
     assert options_seen[0]["proxy"] == "http://proxy.example:8080"
-    assert options_seen[1]["proxy"] == "http://proxy.example:8080"
+
+
+def test_lock_timeout_fails_without_entering_ytdlp(monkeypatch, tmp_path: Path):
+    class BusyLock:
+        def acquire(self, timeout):
+            assert timeout >= 1
+            return False
+
+        def release(self):
+            raise AssertionError("unacquired lock must not be released")
+
+    monkeypatch.setattr(download_engine, "YTDLP_LOCK", BusyLock())
+    monkeypatch.setattr(download_engine, "ytdlp_cookiefile", lambda: None)
+    monkeypatch.setattr(download_engine, "ytdlp_extractor_args", lambda: {"youtube": {}})
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+
+    with pytest.raises(yt_dlp.utils.DownloadError, match="lock timeout"):
+        download_engine.attempt_download(
+            job_dir,
+            "https://youtube.com/watch?v=abc",
+            "320",
+            SimpleNamespace(max_duration_seconds=900, max_file_bytes=100_000_000),
+            0.0,
+        )
 
 
 def test_proxy_is_dropped_after_proxy_auth_failure(monkeypatch, tmp_path: Path):
@@ -169,4 +193,3 @@ def test_download_multi_source_search_url_cascade(monkeypatch, tmp_path: Path):
     assert source == "youtube"
     assert info["title"] == "Artist - Track"
     assert any("ytsearch5:" in url for url in urls_downloaded)
-

@@ -158,7 +158,7 @@ def test_explicit_youtube_failure_uses_only_validated_direct_fallback(monkeypatc
     )
 
     assert source == "soundcloud"
-    assert searches == [{"raw_title": None, "catalog_no": None, "strict": True, "label": None}]
+    assert searches == [{"raw_title": None, "catalog_no": None, "strict": True, "label": None, "proxy": "http://proxy.invalid:8080"}]
     assert calls == [
         (requested_url, "http://proxy.invalid:8080"),
         (fallback_url, None),

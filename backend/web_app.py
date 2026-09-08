@@ -582,7 +582,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             return None, None
         return track["track_id"], r2_key
 
-    def process_job(job_id: str, url: str, quality: str) -> None:
+    def _process_job(job_id: str, url: str, quality: str) -> None:
         job_dir = jobs_dir / job_id
         job_dir.mkdir(mode=0o700)
         started = time.monotonic()
@@ -767,7 +767,15 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             shutil.rmtree(job_dir, ignore_errors=True)
             store.update_job(job_id, status="error", error="Download failed", expires_at=time.time() + settings.artifact_ttl_seconds)
 
-    def process_youtube_direct(job_id: str, url: str, owner: str, req_genre: str | None) -> None:
+    def process_job(job_id: str, url: str, quality: str) -> None:
+        try:
+            _process_job(job_id, url, quality)
+        except Exception as exc:
+            logger.error("download worker boundary failed job_id=%s error_type=%s detail=%r", job_id, type(exc).__name__, str(exc)[:300])
+            shutil.rmtree(jobs_dir / job_id, ignore_errors=True)
+            store.update_job(job_id, status="error", error="Download failed", expires_at=time.time() + settings.artifact_ttl_seconds)
+
+    def _process_youtube_direct(job_id: str, url: str, owner: str, req_genre: str | None) -> None:
         """YouTube-only direct download (Sezione 1, Task 1.1) with cloud storage.
 
         Differs from process_job in two ways:
@@ -789,6 +797,26 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         row = store.get_job_by_id(job_id)
         artist = row["artist"] if row else None
         title = row["title"] if row else None
+        duration = row["duration"] if row else None
+        raw_title = row["raw_title"] if row else None
+
+        if not (artist and title):
+            try:
+                recognized = resolve_track(url)
+                artist = artist or recognized.get("artist")
+                title = title or recognized.get("title")
+                duration = duration or recognized.get("duration")
+                raw_title = raw_title or recognized.get("raw_title")
+                store.update_job(
+                    job_id,
+                    artist=artist,
+                    title=title,
+                    raw_title=raw_title,
+                    duration=duration,
+                    cover_url=(row["cover_url"] if row and row["cover_url"] else None) or recognized.get("cover_url"),
+                )
+            except Exception as exc:
+                logger.info("youtube background resolve skip job_id=%s detail=%r", job_id, str(exc)[:200])
 
         # Best-effort Discogs enrichment for label/year/genre + cover, same as
         # the main flow. Genre feeds both the R2 key and the catalog row.
@@ -820,14 +848,14 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
 
         try:
             store.update_job(job_id, status="downloading")
-            try:
-                info = attempt_download(job_dir, url, "320", settings, started, proxy=ytdlp_proxy())
-            except Exception as direct_exc:
-                logger.warning("process_youtube_direct attempt_download failed: %r, falling back to download_multi_source", str(direct_exc)[:200])
-                for leftover in job_dir.iterdir():
-                    if leftover.is_file():
-                        leftover.unlink(missing_ok=True)
-                info, _src = download_multi_source(job_dir, job_id, url, artist, title, None, "320", settings, started, proxy=ytdlp_proxy(), label=enrichment.get("label") if enrichment else None)
+            info, _src = download_multi_source(
+                job_dir, job_id, url, artist, title,
+                duration, "320", settings, started,
+                proxy=ytdlp_proxy(),
+                raw_title=raw_title,
+                catalog_no=enrichment.get("catalog_no") if enrichment else None,
+                label=enrichment.get("label") if enrichment else None,
+            )
             if int(info.get("duration") or 0) > settings.max_duration_seconds:
                 raise yt_dlp.utils.DownloadError("Media duration limit exceeded")
             candidates = [p for p in job_dir.iterdir() if p.is_file() and not p.name.endswith((".part", ".ytdl"))]
@@ -926,6 +954,14 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         except Exception as exc:  # worker boundary: detail to server log only
             logger.error("youtube-direct worker failed job_id=%s error_type=%s detail=%r", job_id, type(exc).__name__, str(exc)[:300])
             shutil.rmtree(job_dir, ignore_errors=True)
+            store.update_job(job_id, status="error", error="Download failed", expires_at=time.time() + settings.artifact_ttl_seconds)
+
+    def process_youtube_direct(job_id: str, url: str, owner: str, req_genre: str | None) -> None:
+        try:
+            _process_youtube_direct(job_id, url, owner, req_genre)
+        except Exception as exc:
+            logger.error("youtube worker boundary failed job_id=%s error_type=%s detail=%r", job_id, type(exc).__name__, str(exc)[:300])
+            shutil.rmtree(jobs_dir / job_id, ignore_errors=True)
             store.update_job(job_id, status="error", error="Download failed", expires_at=time.time() + settings.artifact_ttl_seconds)
 
     @app.get("/health")
@@ -1082,7 +1118,11 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if not is_youtube_url(request.url):
             raise HTTPException(status_code=400, detail="URL must be a YouTube link")
         job_id = str(uuid.uuid4())
-        recognized = resolve_track(request.url)
+        try:
+            recognized = resolve_track_oembed(request.url) or {}
+        except Exception as exc:
+            logger.info("youtube-direct oembed skip detail=%r", str(exc)[:150])
+            recognized = {}
         accepted = store.create_job_if_capacity(
             job_id,
             owner,

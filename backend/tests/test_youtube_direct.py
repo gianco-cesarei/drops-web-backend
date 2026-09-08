@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from conftest import join_bpm_threads
+import web_app
 
 
 def test_requires_auth(make_client):
@@ -80,3 +81,24 @@ def test_status_unknown_task_404(make_client):
     client, app = make_client()
     resp = client.get("/api/download/youtube-direct/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_preliminary_worker_error_reaches_terminal_state(make_client, monkeypatch):
+    client, app = make_client()
+    original_mkdir = web_app.Path.mkdir
+
+    def fail_job_dir(self, *args, **kwargs):
+        if self.parent.name == "jobs":
+            raise OSError("simulated setup failure")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(web_app.Path, "mkdir", fail_job_dir)
+
+    response = client.post(
+        "/api/download/youtube-direct",
+        json={"url": "https://www.youtube.com/watch?v=setup-failure"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "error"
+    assert response.json()["error"] == "Download failed"
