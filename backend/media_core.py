@@ -138,7 +138,15 @@ def ytdlp_cookiefile() -> str | None:
     candidates: list[str] = []
     env_val = os.environ.get("DROPS_YTDLP_COOKIES", "").strip()
     if env_val:
-        if os.path.isfile(env_val):
+        if env_val.startswith("base64:"):
+            import base64
+            try:
+                decoded = base64.b64decode(env_val[7:]).decode("utf-8")
+                if _valid_netscape_cookies(decoded):
+                    return _write_private_cookie_copy(decoded)
+            except Exception as e:
+                logger.warning("Failed to decode base64 cookies from env var: %s", e)
+        elif os.path.isfile(env_val):
             candidates.append(env_val)
         elif _valid_netscape_cookies(env_val):
             try:

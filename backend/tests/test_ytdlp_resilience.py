@@ -245,10 +245,20 @@ def test_ytdlp_cookiefile_direct_when_writable(monkeypatch, tmp_path: Path):
     writable = tmp_path / "cookies.txt"
     writable.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue\n")
     monkeypatch.setenv("DROPS_YTDLP_COOKIES", str(writable))
-    monkeypatch.setattr(media_core.Path, "is_dir", lambda _self: False)
-
     res = media_core.ytdlp_cookiefile()
     assert res == str(writable.resolve())
+
+
+def test_ytdlp_cookiefile_base64_env(monkeypatch):
+    import base64
+    raw = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue\n"
+    b64 = base64.b64encode(raw.encode("utf-8")).decode("utf-8")
+    monkeypatch.setenv("DROPS_YTDLP_COOKIES", f"base64:{b64}")
+    monkeypatch.setattr(media_core.Path, "is_dir", lambda _self: False)
+    res = media_core.ytdlp_cookiefile()
+    assert res is not None
+    assert Path(res).is_file()
+    assert "SID" in Path(res).read_text()
 
 
 def test_ytdlp_cookiefile_copy_when_readonly(monkeypatch, tmp_path: Path):
