@@ -328,13 +328,13 @@ def test_youtube_failure_falls_back_to_nonstrict_soundcloud(monkeypatch, tmp_pat
 def test_pot_provider_extractor_args_default(monkeypatch):
     monkeypatch.delenv("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", raising=False)
     args = media_core._pot_provider_extractor_args()
-    assert args == {"youtubepot-bgutilhttp": {"base_url": "http://127.0.0.1:4416"}}
+    assert args == {"youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]}}
 
 
 def test_pot_provider_extractor_args_custom_env(monkeypatch):
     monkeypatch.setenv("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", "http://custom-host:9999")
     args = media_core._pot_provider_extractor_args()
-    assert args == {"youtubepot-bgutilhttp": {"base_url": "http://custom-host:9999"}}
+    assert args == {"youtubepot-bgutilhttp": {"base_url": ["http://custom-host:9999"]}}
 
 
 

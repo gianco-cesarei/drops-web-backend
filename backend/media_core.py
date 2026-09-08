@@ -114,7 +114,7 @@ def _pot_provider_extractor_args() -> dict:
         logger.info("pot provider: bgutil-ytdlp-pot-provider non installato, PO token disabilitato")
         return {}
     http_base_url = os.environ.get("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", "").strip() or "http://127.0.0.1:4416"
-    return {"youtubepot-bgutilhttp": {"base_url": http_base_url}}
+    return {"youtubepot-bgutilhttp": {"base_url": [http_base_url]}}
 
 
 _CACHED_COOKIE_COPY: dict[str, Any] = {"path": None, "hash": None}
