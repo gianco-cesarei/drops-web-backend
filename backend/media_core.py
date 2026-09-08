@@ -130,7 +130,12 @@ def _valid_netscape_cookies(content: str) -> bool:
     if not content.lstrip().startswith("# Netscape HTTP Cookie File"):
         return False
     for line in content.splitlines():
-        if line and not line.startswith("#") and len(line.split("\t")) == 7:
+        line_str = line.strip()
+        if line_str.startswith("#HttpOnly_"):
+            line_str = line_str[len("#HttpOnly_"):]
+        elif line_str.startswith("#"):
+            continue
+        if len(line_str.split("\t")) == 7:
             return True
     return False
 

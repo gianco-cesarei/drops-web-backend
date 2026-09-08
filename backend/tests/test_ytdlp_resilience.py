@@ -29,6 +29,16 @@ def test_raw_netscape_cookies_get_private_permissions(monkeypatch, tmp_path: Pat
     assert result.stat().st_mode & 0o777 == 0o600
 
 
+def test_httponly_netscape_cookies_are_valid(monkeypatch, tmp_path: Path):
+    raw = "# Netscape HTTP Cookie File\n#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2147483647\tLOGIN_INFO\tabc123val"
+    monkeypatch.setenv("DROPS_YTDLP_COOKIES", raw)
+    monkeypatch.setattr(media_core.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    result = Path(media_core.ytdlp_cookiefile() or "")
+
+    assert result.read_text() == raw
+
+
 def test_malformed_cookie_file_is_rejected(monkeypatch, tmp_path: Path):
     malformed = tmp_path / "cookies.txt"
     malformed.write_text("<html>not cookies</html>")
