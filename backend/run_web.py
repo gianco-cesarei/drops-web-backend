@@ -70,7 +70,7 @@ def start_bgutil_pot_provider() -> bool:
         # cwd lets server resolve node_modules. DEVNULL prevents an unread
         # PIPE buffer from blocking long-lived sidecar process.
         process = subprocess.Popen(
-            ["node", BGUTIL_SERVER_ENTRY], cwd=BGUTIL_SERVER_DIR,
+            ["node", "--max-old-space-size=96", BGUTIL_SERVER_ENTRY], cwd=BGUTIL_SERVER_DIR,
             stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, text=True,
         )
     except OSError as exc:
