@@ -489,12 +489,8 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
     current_options = dict(options)
 
     for attempt in range(1, 5):
-        client_tier = CLIENT_TIERS[min(attempt - 1, len(CLIENT_TIERS) - 1)]
-        ext_args = dict(current_options.get("extractor_args") or {})
-        yt_args = dict(ext_args.get("youtube") or {})
-        yt_args["player_client"] = client_tier
-        ext_args["youtube"] = yt_args
-        current_options["extractor_args"] = ext_args
+        # Use default extractor args from media_core (includes PO token, player_skip web, etc.)
+        current_options["extractor_args"] = dict(options.get("extractor_args") or {})
 
         # Format fallback on later attempts if rigid format fails
         if attempt >= 3:
@@ -526,7 +522,7 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
                 or attempt == 4
             ):
                 raise
-            logger.warning("download retrying attempt=%s client_tier=%s error=%r", attempt, client_tier, str(exc)[:150])
+            logger.warning("download retrying attempt=%s error=%r", attempt, str(exc)[:150])
             time.sleep(attempt * 0.5)
         finally:
             YTDLP_LOCK.release()
