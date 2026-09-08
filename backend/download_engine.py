@@ -567,6 +567,14 @@ def attempt_download(
             except Exception:
                 pass
 
+        # When cookies are present, direct connection with Netscape cookies + Node JS solver
+        # is reliable and avoids shared proxy rate-limits. Try direct first on attempts 1-2, keep proxy for fallback.
+        if has_cookies:
+            if attempt <= 2:
+                current_options.pop("proxy", None)
+            elif proxy:
+                current_options["proxy"] = proxy
+
         # Format fallback on later attempts if rigid format fails
         if attempt >= 3:
             current_options["format"] = "bestaudio/best"
