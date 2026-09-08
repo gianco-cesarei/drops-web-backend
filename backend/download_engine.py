@@ -504,7 +504,7 @@ def attempt_download(
         "ignoreerrors": is_search,
         "max_filesize": settings.max_file_bytes,
         "match_filter": duration_filter,
-        "socket_timeout": 15,
+        "socket_timeout": 30,
         "nocheckcertificate": True,
         "concurrent_fragment_downloads": 4,
         "progress_hooks": [progress],
@@ -526,16 +526,16 @@ def attempt_download(
     if has_cookies:
         # Authenticated cookies (from desktop browser) match desktop 'web' client.
         CLIENT_TIERS = [
-            ["web", "web_embedded", "web_remix"],
-            ["web_remix", "android"],
-            ["android", "mweb"],
-            ["android", "ios"],
+            ["web", "web_embedded"],
+            ["web_embedded", "web"],
+            ["mweb"],
+            ["android"],
         ]
     else:
         # Unauthenticated datacenter IPs: with bgutil POT provider, prioritize web + web_embedded
         CLIENT_TIERS = [
-            ["web", "web_embedded", "web_remix"],
-            ["web_remix", "android"],
+            ["web", "web_embedded"],
+            ["web_embedded", "web"],
             ["android", "mweb"],
             ["tv", "android"],
         ]
@@ -558,6 +558,15 @@ def attempt_download(
             extractor_args["youtube"] = yt_args
         current_options["extractor_args"] = extractor_args
 
+        # yt-dlp refuses to use android client if cookies are present; strip cookies when trying android
+        if "android" in client_tier:
+            current_options.pop("cookiefile", None)
+            current_options.pop("user_agent", None)
+            try:
+                current_options["extractor_args"] = ytdlp_extractor_args(has_cookies=False)
+            except Exception:
+                pass
+
         # Format fallback on later attempts if rigid format fails
         if attempt >= 3:
             current_options["format"] = "bestaudio/best"
@@ -578,6 +587,7 @@ def attempt_download(
             proxy_failure = any(marker in exc_str for marker in (
                 "407 proxy authentication", "proxyconnect", "proxy connection",
                 "unable to connect to proxy", "tunnel connection failed",
+                "timed out", "read timed out", "connection reset by peer",
             ))
             if "proxy" in current_options and proxy_failure:
                 logger.warning("Proxy error/bot detected (%r), dropping proxy for direct fallback", str(exc)[:150])
