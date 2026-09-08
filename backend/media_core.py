@@ -67,34 +67,16 @@ def _pot_provider_extractor_args() -> dict:
     """Best-effort PO token via bgutil-ytdlp-pot-provider.
 
     Helps dodge YouTube's bot-check but never required: needs the pip plugin
-    installed (client-side, talks to whichever backend below is available).
-    Two backends, tried in order:
-
-    1. HTTP server (DROPS_YTDLP_BGUTIL_HTTP_BASE_URL) - our own Docker image
-       runs the bgutil Node server as a sidecar process and sets this env var
-       once it's confirmed up (see run_web.py). Preferred: one long-lived
-       server handles every request instead of spawning a fresh process per
-       token.
-    2. Script mode (DROPS_YTDLP_BGUTIL_SCRIPT) - a cloned bgutil script dir
-       plus node/deno on PATH, for setups that don't run our Docker image
-       (e.g. local dev with the repo cloned manually).
-
-    Neither present -> skip silently, yt-dlp proceeds without a PO token
-    exactly like it does today.
+    installed. Defaults to http://127.0.0.1:4416 if DROPS_YTDLP_BGUTIL_HTTP_BASE_URL
+    is not set, ensuring yt-dlp automatically uses the sidecar server.
     """
     try:
         importlib.metadata.distribution("bgutil-ytdlp-pot-provider")
     except importlib.metadata.PackageNotFoundError:
         logger.info("pot provider: bgutil-ytdlp-pot-provider non installato, PO token disabilitato")
         return {}
-    http_base_url = os.environ.get("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", "").strip()
-    if http_base_url:
-        return {"youtubepot-bgutilhttp": {"base_url": http_base_url}}
-    script_home = os.environ.get("DROPS_YTDLP_BGUTIL_SCRIPT", "").strip() or str(Path.home() / "bgutil-ytdlp-pot-provider" / "server")
-    if not os.path.isdir(script_home):
-        logger.info("pot provider: nessun server HTTP configurato e script bgutil non trovato in %s, PO token disabilitato", script_home)
-        return {}
-    return {"youtubepot-bgutilscript": {"server_home": script_home}}
+    http_base_url = os.environ.get("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", "").strip() or "http://127.0.0.1:4416"
+    return {"youtubepot-bgutilhttp": {"base_url": http_base_url}}
 
 
 def ytdlp_cookiefile() -> str | None:

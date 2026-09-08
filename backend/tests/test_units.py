@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import download_engine
+import media_core
 import r2_storage
 import track_store
 
@@ -322,5 +323,18 @@ def test_youtube_failure_falls_back_to_nonstrict_soundcloud(monkeypatch, tmp_pat
     assert source == "soundcloud"
     assert info["title"] == "Artist - Track"
     assert calls == [requested_url, sc_fallback_url]
+
+
+def test_pot_provider_extractor_args_default(monkeypatch):
+    monkeypatch.delenv("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", raising=False)
+    args = media_core._pot_provider_extractor_args()
+    assert args == {"youtubepot-bgutilhttp": {"base_url": "http://127.0.0.1:4416"}}
+
+
+def test_pot_provider_extractor_args_custom_env(monkeypatch):
+    monkeypatch.setenv("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", "http://custom-host:9999")
+    args = media_core._pot_provider_extractor_args()
+    assert args == {"youtubepot-bgutilhttp": {"base_url": "http://custom-host:9999"}}
+
 
 
