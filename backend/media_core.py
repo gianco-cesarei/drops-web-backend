@@ -26,22 +26,54 @@ YTDLP_LOCK = threading.Lock()
 _COOKIE_FILE_LOCK = threading.Lock()
 
 
-YTDLP_PLAYER_CLIENTS = ["android", "mweb", "tv", "ios"]
+AUTHED_YTDLP_PLAYER_CLIENTS = ["web", "web_safari", "mweb", "tv_downgraded"]
+UNAUTH_YTDLP_PLAYER_CLIENTS = ["android", "mweb", "tv", "ios"]
+YTDLP_PLAYER_CLIENTS = UNAUTH_YTDLP_PLAYER_CLIENTS
+
+DEFAULT_DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+)
 
 
-def ytdlp_extractor_args() -> dict:
+def ytdlp_user_agent(has_cookies: bool | None = None) -> str | None:
+    """User-Agent header for yt-dlp.
+
+    When session cookies are present (typically exported from a desktop browser),
+    YouTube expects matching desktop headers to validate authenticated Innertube sessions.
+    Can be explicitly overridden via the DROPS_YTDLP_USER_AGENT environment variable.
+    """
+    custom_ua = os.environ.get("DROPS_YTDLP_USER_AGENT", "").strip()
+    if custom_ua:
+        return custom_ua
+    if has_cookies is None:
+        has_cookies = bool(ytdlp_cookiefile())
+    if has_cookies:
+        return DEFAULT_DESKTOP_USER_AGENT
+    return None
+
+
+def ytdlp_extractor_args(has_cookies: bool | None = None) -> dict:
     """youtube player clients to try, shared by download and BPM (same engine).
 
-    Render's datacenter IPs trip YouTube's "Sign in to confirm you're not a
-    bot" check on the default web client; mobile player clients and skipping
-    desktop web formats avoid triggering bot-checks on datacenter IPs.
+    When cookies are present, prioritize authenticated web clients ('web', 'web_safari', 'mweb')
+    and DO NOT skip web: browser cookies are issued for the web client.
+    When cookies are absent, Render's datacenter IPs trip YouTube's bot-check on desktop web;
+    skipping desktop web formats avoids triggering bot-checks on unauthenticated datacenter IPs.
     """
-    args: dict = {
-        "youtube": {
-            "player_client": list(YTDLP_PLAYER_CLIENTS),
+    if has_cookies is None:
+        has_cookies = bool(ytdlp_cookiefile())
+
+    if has_cookies:
+        yt_args: dict[str, Any] = {
+            "player_client": list(AUTHED_YTDLP_PLAYER_CLIENTS),
+        }
+    else:
+        yt_args = {
+            "player_client": list(UNAUTH_YTDLP_PLAYER_CLIENTS),
             "player_skip": ["web"],
         }
-    }
+
+    args: dict = {"youtube": yt_args}
     pot_provider = _pot_provider_extractor_args()
     if pot_provider:
         args.update(pot_provider)
@@ -80,6 +112,9 @@ def _pot_provider_extractor_args() -> dict:
         return {}
     http_base_url = os.environ.get("DROPS_YTDLP_BGUTIL_HTTP_BASE_URL", "").strip() or "http://127.0.0.1:4416"
     return {"youtubepot-bgutilhttp": {"base_url": http_base_url}}
+
+
+_CACHED_COOKIE_COPY: dict[str, Any] = {"path": None, "hash": None}
 
 
 def ytdlp_cookiefile() -> str | None:
@@ -129,6 +164,11 @@ def ytdlp_cookiefile() -> str | None:
                 if not _valid_netscape_cookies(content):
                     logger.warning("Cookie file configurato non e' Netscape valido; cookie disabilitati")
                     continue
+                # If candidate file is writable on disk, yt-dlp can use it directly.
+                # If read-only (like /etc/secrets/cookies.txt on Render), yt-dlp's save_cookies()
+                # on exit would fail with PermissionError, so write a process-private copy.
+                if os.access(path, os.R_OK | os.W_OK):
+                    return str(Path(path).resolve())
                 return _write_private_cookie_copy(content)
             except Exception:
                 logger.warning("Cookie file configurato non leggibile; cookie disabilitati")
@@ -151,19 +191,37 @@ def _valid_netscape_cookies(content: str) -> bool:
 
 
 def _write_private_cookie_copy(content: str) -> str:
-    """Write process-private cookie copy without following predictable symlinks."""
+    """Write process-private cookie copy without following predictable symlinks.
+
+    Caches the file to prevent truncating/re-writing while yt-dlp is reading/writing.
+    """
+    import hashlib
+
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     path = os.path.join(tempfile.gettempdir(), f"drops-youtube-cookies-{os.getpid()}.txt")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
     with _COOKIE_FILE_LOCK:
+        if (
+            _CACHED_COOKIE_COPY.get("path") == path
+            and _CACHED_COOKIE_COPY.get("hash") == content_hash
+            and os.path.isfile(path)
+            and os.path.getsize(path) > 0
+        ):
+            return path
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
         fd = os.open(path, flags, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
             with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
                 handle.write(content)
         finally:
             os.close(fd)
+        _CACHED_COOKIE_COPY["path"] = path
+        _CACHED_COOKIE_COPY["hash"] = content_hash
     return path
 
 

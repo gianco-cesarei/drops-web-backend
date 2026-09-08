@@ -14,7 +14,15 @@ from urllib.parse import urlsplit
 
 import yt_dlp
 
-from media_core import YTDLP_LOCK, is_youtube_url, strip_noise, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_source_address
+from media_core import (
+    YTDLP_LOCK,
+    is_youtube_url,
+    strip_noise,
+    ytdlp_cookiefile,
+    ytdlp_extractor_args,
+    ytdlp_source_address,
+    ytdlp_user_agent,
+)
 
 logger = logging.getLogger("drops.download")
 
@@ -453,6 +461,18 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
     # Upgrade single-result ytsearch queries to ytsearch5 to allow inspecting alternative candidates
     target_url = re.sub(r"^ytsearch[1-4]:", "ytsearch5:", url)
     is_yt = is_youtube_url(target_url) or "ytsearch" in target_url
+    cookies = ytdlp_cookiefile()
+    has_cookies = bool(cookies)
+
+    try:
+        current_extractor_args = ytdlp_extractor_args(has_cookies=has_cookies)
+    except TypeError:
+        current_extractor_args = ytdlp_extractor_args()
+
+    try:
+        ua = ytdlp_user_agent(has_cookies=has_cookies)
+    except TypeError:
+        ua = ytdlp_user_agent()
 
     options = {
         # YouTube audio streams are Opus/AAC (never native MP3), so demand bestaudio/best
@@ -467,22 +487,35 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         "nocheckcertificate": True,
         "concurrent_fragment_downloads": 4,
         "progress_hooks": [progress],
-        "extractor_args": ytdlp_extractor_args(),
+        "extractor_args": current_extractor_args,
     }
-    cookies = ytdlp_cookiefile()
     if cookies:
         options["cookiefile"] = cookies
+    if ua:
+        options["user_agent"] = ua
     if proxy:
         options["proxy"] = proxy
     src_addr = ytdlp_source_address()
     if src_addr:
         options["source_address"] = src_addr
-    CLIENT_TIERS = [
-        ["android", "mweb"],
-        ["mweb", "android"],
-        ["tv", "android"],
-        ["android", "tv", "ios"],
-    ]
+
+    if has_cookies:
+        # Authenticated cookies (from desktop browser) match desktop 'web' client.
+        # Note: android/ios do not support cookies in yt-dlp (yt-dlp skips them).
+        CLIENT_TIERS = [
+            ["web", "web_safari", "mweb"],
+            ["web_safari", "web", "mweb"],
+            ["mweb", "web"],
+            ["tv_downgraded", "tv", "web"],
+        ]
+    else:
+        # Unauthenticated datacenter IPs: avoid desktop web to bypass anti-bot blocks.
+        CLIENT_TIERS = [
+            ["android", "mweb"],
+            ["mweb", "android"],
+            ["tv", "android"],
+            ["android", "tv", "ios"],
+        ]
 
     info = None
     last_extract_error: Exception | None = None
@@ -490,11 +523,15 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
 
     for attempt in range(1, 5):
         # Rotate player clients across attempts
-        client_tier = CLIENT_TIERS[attempt - 1] if attempt <= len(CLIENT_TIERS) else ["android", "mweb"]
+        client_tier = CLIENT_TIERS[attempt - 1] if attempt <= len(CLIENT_TIERS) else CLIENT_TIERS[0]
         extractor_args = dict(options.get("extractor_args") or {})
         if "youtube" in extractor_args:
             yt_args = dict(extractor_args["youtube"])
             yt_args["player_client"] = list(client_tier)
+            if has_cookies and "player_skip" in yt_args:
+                yt_args["player_skip"] = [s for s in yt_args["player_skip"] if s != "web"]
+                if not yt_args["player_skip"]:
+                    yt_args.pop("player_skip", None)
             extractor_args["youtube"] = yt_args
         current_options["extractor_args"] = extractor_args
 

@@ -43,6 +43,7 @@ from media_core import (
     ytdlp_cookiefile,
     ytdlp_extractor_args,
     ytdlp_proxy,
+    ytdlp_user_agent,
 )
 import r2_storage
 from spotify_agent import SpotifyAgentError, WebSpotifyClient
@@ -1263,17 +1264,21 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if not is_supported_url(request.url):
             raise HTTPException(status_code=400, detail="Unsupported URL")
         url_context = _youtube_url_context(request.url)
+        cookiefile = ytdlp_cookiefile()
+        has_cookies = bool(cookiefile)
+        ua = ytdlp_user_agent(has_cookies=has_cookies)
         options = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": "in_playlist",
             "playlistend": settings.max_queued + 1,
-            "extractor_args": ytdlp_extractor_args(),
+            "extractor_args": ytdlp_extractor_args(has_cookies=has_cookies),
         }
-        cookiefile = ytdlp_cookiefile()
         if cookiefile:
             options["cookiefile"] = cookiefile
+        if ua:
+            options["user_agent"] = ua
         proxy = ytdlp_proxy()
         if proxy:
             options["proxy"] = proxy

@@ -19,7 +19,7 @@ from typing import Any
 
 import yt_dlp
 from discogs_agent import DiscogsClient
-from media_core import ytdlp_cookiefile, ytdlp_extractor_args
+from media_core import ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_user_agent
 
 SPOTIFY_AUTHORIZE = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN = "https://accounts.spotify.com/api/token"
@@ -728,16 +728,20 @@ def search_candidates(track_id: str, limit: int = 5) -> dict[str, Any]:
     if not track:
         raise SpotifyAgentError("Brano non trovato nel catalogo importato")
     query = f"{' '.join(track['artists'])} {track['name']} official audio"
+    cookies = ytdlp_cookiefile()
+    has_cookies = bool(cookies)
+    ua = ytdlp_user_agent(has_cookies=has_cookies)
     options = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
         "skip_download": True,
-        "extractor_args": ytdlp_extractor_args(),
+        "extractor_args": ytdlp_extractor_args(has_cookies=has_cookies),
     }
-    cookies = ytdlp_cookiefile()
     if cookies:
         options["cookiefile"] = cookies
+    if ua:
+        options["user_agent"] = ua
     with yt_dlp.YoutubeDL(options) as ydl:
         result = ydl.extract_info(
             f"ytsearch{max(1, min(limit, 10))}:{query}", download=False

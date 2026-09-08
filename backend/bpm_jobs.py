@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import yt_dlp
 
 from bpm_analyzer import analyze_bpm
-from media_core import YTDLP_LOCK, ytdlp_cookiefile, ytdlp_extractor_args
+from media_core import YTDLP_LOCK, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_user_agent
 
 
 def normalize_key(value: str) -> str:
@@ -97,6 +97,8 @@ class BpmJobManager:
         candidates = [source_url] if source_url and self._allowed_source(source_url) else []
         candidates.extend([f"scsearch1:{query}", f"ytsearch1:{query}"])
         cookies = ytdlp_cookiefile()
+        has_cookies = bool(cookies)
+        ua = ytdlp_user_agent(has_cookies=has_cookies)
         last_error: Exception | None = None
         for source in candidates:
             # YouTube's bot-check is intermittent per player client/IP, so retry
@@ -108,10 +110,12 @@ class BpmJobManager:
                         "format": "bestaudio/best", "outtmpl": str(directory / "source.%(ext)s"),
                         "quiet": True, "no_warnings": True, "noplaylist": True,
                         "socket_timeout": 15, "retries": 1,
-                        "extractor_args": ytdlp_extractor_args(),
+                        "extractor_args": ytdlp_extractor_args(has_cookies=has_cookies),
                     }
                     if cookies:
                         options["cookiefile"] = cookies
+                    if ua:
+                        options["user_agent"] = ua
                     with YTDLP_LOCK, yt_dlp.YoutubeDL(options) as downloader:
                         downloader.extract_info(source, download=True)
                     files = [path for path in directory.iterdir() if path.is_file() and not path.name.endswith((".part", ".ytdl"))]

@@ -203,3 +203,95 @@ def test_download_multi_source_search_url_cascade(monkeypatch, tmp_path: Path):
     assert source == "youtube"
     assert info["title"] == "Artist - Track"
     assert any("ytsearch5:" in url for url in urls_downloaded)
+
+
+def test_ytdlp_extractor_args_with_cookies_prioritizes_web_and_no_skip():
+    args = media_core.ytdlp_extractor_args(has_cookies=True)
+    yt = args["youtube"]
+    assert "web" in yt["player_client"]
+    assert "web_safari" in yt["player_client"]
+    assert "player_skip" not in yt or "web" not in yt["player_skip"]
+
+
+def test_ytdlp_extractor_args_without_cookies_skips_web():
+    args = media_core.ytdlp_extractor_args(has_cookies=False)
+    yt = args["youtube"]
+    assert "android" in yt["player_client"]
+    assert "web" in yt.get("player_skip", [])
+
+
+def test_ytdlp_user_agent_matching_and_override(monkeypatch):
+    monkeypatch.delenv("DROPS_YTDLP_USER_AGENT", raising=False)
+    assert media_core.ytdlp_user_agent(has_cookies=False) is None
+    assert "Mozilla/5.0" in (media_core.ytdlp_user_agent(has_cookies=True) or "")
+
+    monkeypatch.setenv("DROPS_YTDLP_USER_AGENT", "CustomUserAgent/2.0")
+    assert media_core.ytdlp_user_agent(has_cookies=True) == "CustomUserAgent/2.0"
+    assert media_core.ytdlp_user_agent(has_cookies=False) == "CustomUserAgent/2.0"
+
+
+def test_ytdlp_cookiefile_direct_when_writable(monkeypatch, tmp_path: Path):
+    writable = tmp_path / "cookies.txt"
+    writable.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue\n")
+    monkeypatch.setenv("DROPS_YTDLP_COOKIES", str(writable))
+    monkeypatch.setattr(media_core.Path, "is_dir", lambda _self: False)
+
+    res = media_core.ytdlp_cookiefile()
+    assert res == str(writable.resolve())
+
+
+def test_ytdlp_cookiefile_copy_when_readonly(monkeypatch, tmp_path: Path):
+    import os
+    ro_dir = tmp_path / "secrets"
+    ro_dir.mkdir()
+    ro_file = ro_dir / "cookies.txt"
+    ro_file.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue\n")
+    # Mark read-only
+    os.chmod(ro_file, 0o400)
+    monkeypatch.setenv("DROPS_YTDLP_COOKIES", str(ro_file))
+    monkeypatch.setattr(media_core.Path, "is_dir", lambda _self: False)
+
+    res = media_core.ytdlp_cookiefile()
+    # Must NOT be the read-only file itself, but a writable temp copy
+    assert res != str(ro_file.resolve())
+    assert res is not None
+    assert Path(res).is_file()
+    assert os.access(res, os.W_OK)
+    os.chmod(ro_file, 0o600)
+
+
+def test_attempt_download_client_tiers_rotate_web_when_cookies_present(monkeypatch, tmp_path: Path):
+    options_seen = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            options_seen.append(dict(options))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, download):
+            return {"title": "Test Track", "duration": 120}
+
+    monkeypatch.setattr(download_engine.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(download_engine, "ytdlp_cookiefile", lambda: "/tmp/fake-cookies.txt")
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    settings = SimpleNamespace(max_duration_seconds=900, max_file_bytes=100_000_000)
+
+    download_engine.attempt_download(
+        job_dir, "https://youtube.com/watch?v=qPcX4F5J4fk", "320", settings, 0.0
+    )
+
+    assert len(options_seen) >= 1
+    first_attempt_opts = options_seen[0]
+    assert first_attempt_opts.get("cookiefile") == "/tmp/fake-cookies.txt"
+    assert first_attempt_opts.get("user_agent") is not None
+    yt_args = first_attempt_opts["extractor_args"]["youtube"]
+    assert "web" in yt_args["player_client"]
+    assert "web" not in yt_args.get("player_skip", [])
+
