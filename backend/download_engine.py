@@ -50,7 +50,14 @@ YOUTUBE_FALLBACK_ERROR_MARKERS = (
     "requested format is not available",
 )
 
-YOUTUBE_NO_RETRY_MARKERS = YOUTUBE_FALLBACK_ERROR_MARKERS
+YOUTUBE_NO_RETRY_MARKERS = (
+    "sign in to confirm",
+    "youtube verification required",
+    "private video",
+    "this video has been removed",
+    "account has been terminated",
+    "copyright",
+)
 
 SOUNDCLOUD_SEARCH_COUNT = 5
 DURATION_TOLERANCE_SECONDS = 15
@@ -516,15 +523,15 @@ def attempt_download(
         # Authenticated cookies (from desktop browser) match desktop 'web' client.
         CLIENT_TIERS = [
             ["web", "web_embedded"],
-            ["web_embedded", "mweb"],
             ["mweb", "android"],
+            ["android", "mweb"],
             ["android", "ios"],
         ]
     else:
         # Unauthenticated datacenter IPs: with bgutil POT provider, prioritize web + web_embedded
         CLIENT_TIERS = [
             ["web", "web_embedded"],
-            ["web_embedded", "mweb"],
+            ["mweb", "android"],
             ["android", "mweb"],
             ["tv", "android"],
         ]
