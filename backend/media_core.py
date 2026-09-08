@@ -42,10 +42,13 @@ def ytdlp_extractor_args() -> dict:
             "player_skip": ["web"],
         }
     }
-    po_token = os.environ.get("DROPS_YTDLP_PO_TOKEN", "").strip()
-    if po_token:
-        args["youtube"]["po_token"] = [f"mweb+{po_token}", f"web+{po_token}"]
-    args.update(_pot_provider_extractor_args())
+    pot_provider = _pot_provider_extractor_args()
+    if pot_provider:
+        args.update(pot_provider)
+    else:
+        po_token = os.environ.get("DROPS_YTDLP_PO_TOKEN", "").strip()
+        if po_token:
+            args["youtube"]["po_token"] = [f"mweb+{po_token}", f"web+{po_token}"]
     return args
 
 
