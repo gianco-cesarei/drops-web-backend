@@ -588,10 +588,13 @@ def attempt_download(
                 "407 proxy authentication", "proxyconnect", "proxy connection",
                 "unable to connect to proxy", "tunnel connection failed",
                 "timed out", "read timed out", "connection reset by peer",
+                "rate-limited", "this content isn't available", "try again later",
+                "429", "too many requests",
             ))
             if "proxy" in current_options and proxy_failure:
-                logger.warning("Proxy error/bot detected (%r), dropping proxy for direct fallback", str(exc)[:150])
+                logger.warning("Proxy error or rate-limit (%r), dropping proxy for direct fallback", str(exc)[:150])
                 current_options.pop("proxy", None)
+                continue
             # If cookies were challenged, invalidated, or triggered reload/signature errors, drop cookies immediately and retry unauthenticated
             if "cookiefile" in current_options and any(marker in exc_str for marker in (
                 "sign in to confirm", "anti-bot", "no longer valid", "verification required", "page needs to be reloaded", "signature solving failed",
