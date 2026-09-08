@@ -1178,28 +1178,26 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         except Exception as e:
             results["bgutil_ping"] = {"error": str(e)}
 
-        # Test C: Unauthenticated with web_creator / ios / tv_embedded
-        diag_log_alt = DiagLogger()
-        opts_alt = {
+        # Test C: Unauthenticated with web + mweb and bgutil POT provider
+        diag_log_unauth = DiagLogger()
+        opts_unauth = {
             "quiet": False,
             "nocheckcertificate": True,
             "skip_download": True,
             "format": "bestaudio/best",
-            "extractor_args": {
-                "youtube": {"player_client": ["web_creator", "ios", "tv_embedded"]},
-            },
-            "logger": diag_log_alt,
+            "extractor_args": ytdlp_extractor_args(has_cookies=False),
+            "logger": diag_log_unauth,
         }
         try:
-            with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_alt) as ydl:
+            with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_unauth) as ydl:
                 info = ydl.extract_info(url, download=False)
-                results["alt_clients_no_cookies"] = {
+                results["web_unauth_with_pot"] = {
                     "ok": True,
                     "title": info.get("title") if info else None,
-                    "chosen_client": info.get("extractor_key"),
+                    "formats_count": len(info.get("formats", [])) if info else 0,
                 }
         except Exception as e:
-            results["alt_clients_no_cookies"] = {"ok": False, "error": str(e)[:300], "logs": diag_log_alt.messages[-10:]}
+            results["web_unauth_with_pot"] = {"ok": False, "error": str(e)[:300], "logs": diag_log_unauth.messages[-15:]}
 
         # Test D: TV client
         opts_tv = {

@@ -30,7 +30,7 @@ _COOKIE_FILE_LOCK = threading.Lock()
 
 
 AUTHED_YTDLP_PLAYER_CLIENTS = ["web", "web_safari", "mweb", "tv_downgraded"]
-UNAUTH_YTDLP_PLAYER_CLIENTS = ["android", "mweb", "tv", "ios"]
+UNAUTH_YTDLP_PLAYER_CLIENTS = ["web", "mweb", "android", "ios", "tv"]
 YTDLP_PLAYER_CLIENTS = UNAUTH_YTDLP_PLAYER_CLIENTS
 
 DEFAULT_DESKTOP_USER_AGENT = (
@@ -58,26 +58,32 @@ def ytdlp_user_agent(has_cookies: bool | None = None) -> str | None:
 def ytdlp_extractor_args(has_cookies: bool | None = None) -> dict:
     """youtube player clients to try, shared by download and BPM (same engine).
 
-    When cookies are present, prioritize authenticated web clients ('web', 'web_safari', 'mweb')
-    and DO NOT skip web: browser cookies are issued for the web client.
-    When cookies are absent, Render's datacenter IPs trip YouTube's bot-check on desktop web;
-    skipping desktop web formats avoids triggering bot-checks on unauthenticated datacenter IPs.
+    When cookies are present, prioritize authenticated web clients ('web', 'web_safari', 'mweb').
+    When cookies are absent, if the bundled bgutil-ytdlp-pot-provider sidecar is active,
+    allow 'web' and 'mweb' so bgutil can generate PO tokens; otherwise skip 'web' to avoid
+    datacenter IP bot-checks.
     """
     if has_cookies is None:
         has_cookies = bool(ytdlp_cookiefile())
+
+    pot_provider = _pot_provider_extractor_args()
+    has_pot = bool(pot_provider) or bool(os.environ.get("DROPS_YTDLP_PO_TOKEN", "").strip())
 
     if has_cookies:
         yt_args: dict[str, Any] = {
             "player_client": list(AUTHED_YTDLP_PLAYER_CLIENTS),
         }
+    elif has_pot:
+        yt_args = {
+            "player_client": ["web", "mweb", "android", "ios", "tv"],
+        }
     else:
         yt_args = {
-            "player_client": list(UNAUTH_YTDLP_PLAYER_CLIENTS),
+            "player_client": ["android", "mweb", "tv", "ios"],
             "player_skip": ["web"],
         }
 
     args: dict = {"youtube": yt_args}
-    pot_provider = _pot_provider_extractor_args()
     if pot_provider:
         args.update(pot_provider)
     else:

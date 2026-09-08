@@ -518,12 +518,12 @@ def attempt_download(
             ["tv_downgraded", "tv", "web"],
         ]
     else:
-        # Unauthenticated datacenter IPs: avoid desktop web to bypass anti-bot blocks.
+        # Unauthenticated datacenter IPs: with bgutil POT provider, prioritize web + mweb
         CLIENT_TIERS = [
+            ["web", "mweb"],
+            ["mweb", "web"],
             ["android", "mweb"],
-            ["mweb", "android"],
             ["tv", "android"],
-            ["android", "tv", "ios"],
         ]
 
     info = None
@@ -568,6 +568,18 @@ def attempt_download(
             if "proxy" in current_options and proxy_failure:
                 logger.warning("Proxy error/bot detected (%r), dropping proxy for direct fallback", str(exc)[:150])
                 current_options.pop("proxy", None)
+            # If cookies were challenged or invalidated, drop cookies immediately and retry unauthenticated with bgutil POT
+            if "cookiefile" in current_options and any(marker in exc_str for marker in (
+                "sign in to confirm", "anti-bot", "no longer valid", "verification required",
+            )):
+                logger.warning("Cookie authentication challenged or invalidated (%r), dropping cookiefile for unauthenticated retry", str(exc)[:150])
+                current_options.pop("cookiefile", None)
+                current_options.pop("user_agent", None)
+                try:
+                    current_options["extractor_args"] = ytdlp_extractor_args(has_cookies=False)
+                except Exception:
+                    pass
+                continue
             if (
                 str(exc) in DOWNLOAD_ABORT_MESSAGES
                 or any(marker in exc_str for marker in YOUTUBE_NO_RETRY_MARKERS)
@@ -621,6 +633,15 @@ def download_multi_source(
             if not youtube_error_allows_fallback(exact_error):
                 raise
             _clear_job_dir(job_dir)
+            # Try unauthenticated direct fallback with bgutil PO token before SoundCloud
+            try:
+                info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy, force_unauth=True)
+                logger.info("download source scelta job_id=%s source=youtube (unauthenticated direct fallback)", job_id)
+                return info, "youtube"
+            except Exception as unauth_exact_err:
+                logger.info("youtube exact unauthenticated attempt failed job_id=%s detail=%r", job_id, str(unauth_exact_err)[:200])
+                _clear_job_dir(job_dir)
+
             # Pre-resolve track metadata via lightweight oEmbed if artist/title/raw_title is missing
             ref_artist, ref_title, ref_raw_title, ref_duration = artist, title, raw_title, duration
             if not ref_title and not ref_raw_title:

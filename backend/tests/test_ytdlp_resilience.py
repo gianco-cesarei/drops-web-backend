@@ -213,11 +213,21 @@ def test_ytdlp_extractor_args_with_cookies_prioritizes_web_and_no_skip():
     assert "player_skip" not in yt or "web" not in yt["player_skip"]
 
 
-def test_ytdlp_extractor_args_without_cookies_skips_web():
+def test_ytdlp_extractor_args_without_cookies_skips_web(monkeypatch):
+    # Without POT provider: must skip web to avoid datacenter bot-check
+    monkeypatch.setattr(media_core, "_pot_provider_extractor_args", lambda: {})
+    monkeypatch.delenv("DROPS_YTDLP_PO_TOKEN", raising=False)
     args = media_core.ytdlp_extractor_args(has_cookies=False)
     yt = args["youtube"]
     assert "android" in yt["player_client"]
     assert "web" in yt.get("player_skip", [])
+
+    # With POT provider: allows web + mweb
+    monkeypatch.setattr(media_core, "_pot_provider_extractor_args", lambda: {"youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]}})
+    args_pot = media_core.ytdlp_extractor_args(has_cookies=False)
+    yt_pot = args_pot["youtube"]
+    assert "web" in yt_pot["player_client"]
+    assert "player_skip" not in yt_pot or "web" not in yt_pot["player_skip"]
 
 
 def test_ytdlp_user_agent_matching_and_override(monkeypatch):
