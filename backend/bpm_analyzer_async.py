@@ -60,4 +60,7 @@ async def analyze_r2_object_bpm_async(
         await download_file_async(r2_key, str(tmp_path))
         return await analyze_bpm_async(tmp_path, max_seconds=max_seconds)
     finally:
-        tmp_path.unlink(missing_ok=True)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
