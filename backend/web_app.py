@@ -1131,17 +1131,28 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         except Exception as e:
             results["android_no_cookies"] = {"ok": False, "error": str(e)[:300]}
 
-        # Test B: Authenticated web with cookies (if available)
+        class DiagLogger:
+            def __init__(self):
+                self.messages = []
+            def debug(self, msg):
+                self.messages.append(f"[debug] {msg}")
+            def warning(self, msg):
+                self.messages.append(f"[warn] {msg}")
+            def error(self, msg):
+                self.messages.append(f"[error] {msg}")
+
+        # Test A: Authenticated web with cookies (if available)
         if cookie_file:
+            diag_log = DiagLogger()
             opts_web = {
-                "quiet": True,
-                "no_warnings": True,
+                "quiet": False,
                 "nocheckcertificate": True,
                 "skip_download": True,
                 "format": "bestaudio/best",
                 "cookiefile": cookie_file,
                 "user_agent": ytdlp_user_agent(has_cookies=True),
                 "extractor_args": ytdlp_extractor_args(has_cookies=True),
+                "logger": diag_log,
             }
             try:
                 with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_web) as ydl:
@@ -1150,28 +1161,45 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                         "ok": True,
                         "title": info.get("title") if info else None,
                         "formats_count": len(info.get("formats", [])) if info else 0,
+                        "logs": diag_log.messages[-10:],
                     }
             except Exception as e:
-                results["web_with_cookies"] = {"ok": False, "error": str(e)[:300]}
+                results["web_with_cookies"] = {
+                    "ok": False,
+                    "error": str(e)[:300],
+                    "logs": diag_log.messages[-15:],
+                }
 
-        # Test C: Unauthenticated mweb client
-        opts_mweb = {
-            "quiet": True,
-            "no_warnings": True,
+        # Test B: Check sidecar ping response
+        try:
+            import urllib.request
+            req = urllib.request.urlopen("http://127.0.0.1:4416/ping", timeout=2)
+            results["bgutil_ping"] = {"code": req.status, "body": req.read().decode()}
+        except Exception as e:
+            results["bgutil_ping"] = {"error": str(e)}
+
+        # Test C: Unauthenticated with web_creator / ios / tv_embedded
+        diag_log_alt = DiagLogger()
+        opts_alt = {
+            "quiet": False,
             "nocheckcertificate": True,
             "skip_download": True,
             "format": "bestaudio/best",
-            "extractor_args": {"youtube": {"player_client": ["mweb"], "player_skip": ["web"]}},
+            "extractor_args": {
+                "youtube": {"player_client": ["web_creator", "ios", "tv_embedded"]},
+            },
+            "logger": diag_log_alt,
         }
         try:
-            with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_mweb) as ydl:
+            with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_alt) as ydl:
                 info = ydl.extract_info(url, download=False)
-                results["mweb_no_cookies"] = {
+                results["alt_clients_no_cookies"] = {
                     "ok": True,
                     "title": info.get("title") if info else None,
+                    "chosen_client": info.get("extractor_key"),
                 }
         except Exception as e:
-            results["mweb_no_cookies"] = {"ok": False, "error": str(e)[:300]}
+            results["alt_clients_no_cookies"] = {"ok": False, "error": str(e)[:300], "logs": diag_log_alt.messages[-10:]}
 
         # Test D: TV client
         opts_tv = {
