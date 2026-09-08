@@ -441,7 +441,16 @@ def build_search_queries(
     return queries
 
 
-def attempt_download(job_dir: Path, url: str, quality: str, settings, started: float, *, proxy: str | None = None) -> dict[str, Any]:
+def attempt_download(
+    job_dir: Path,
+    url: str,
+    quality: str,
+    settings,
+    started: float,
+    *,
+    proxy: str | None = None,
+    force_unauth: bool = False,
+) -> dict[str, Any]:
     """Run yt-dlp against a single candidate url, with existing retry/limit behavior. Raises on total failure."""
 
     def progress(event: dict) -> None:
@@ -461,8 +470,8 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
     # Upgrade single-result ytsearch queries to ytsearch5 to allow inspecting alternative candidates
     target_url = re.sub(r"^ytsearch[1-4]:", "ytsearch5:", url)
     is_yt = is_youtube_url(target_url) or "ytsearch" in target_url
-    cookies = ytdlp_cookiefile()
-    has_cookies = bool(cookies)
+    cookies = None if force_unauth else ytdlp_cookiefile()
+    has_cookies = False if force_unauth else bool(cookies)
 
     try:
         current_extractor_args = ytdlp_extractor_args(has_cookies=has_cookies)
@@ -678,6 +687,16 @@ def download_multi_source(
                 except Exception as sc_exc:
                     logger.warning("scsearch fallback failed job_id=%s query=%r detail=%r", job_id, search_query, str(sc_exc)[:200])
                     _clear_job_dir(job_dir)
+            # 6. Direct unauthenticated Android fallback
+            # If authenticated/desktop client tripped bot-check or cookies were rejected by YouTube,
+            # retry native YouTube URL using the unauthenticated android client which bypasses bot-check on datacenter IPs.
+            try:
+                info = attempt_download(job_dir, native_url, quality, settings, started, proxy=proxy, force_unauth=True)
+                logger.info("download source scelta job_id=%s source=youtube (unauthenticated android fallback)", job_id)
+                return info, "youtube"
+            except Exception as unauth_err:
+                logger.warning("unauthenticated android fallback failed job_id=%s detail=%r", job_id, str(unauth_err)[:200])
+                _clear_job_dir(job_dir)
 
             raise exact_error
 

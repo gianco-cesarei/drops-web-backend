@@ -1062,9 +1062,44 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 secrets_list = [p.name for p in secrets_dir.iterdir() if p.is_file()]
             except Exception as e:
                 secrets_list = [f"error_listing: {e}"]
+
+        cookie_details: dict[str, Any] = {}
+        if cookie_file and os.path.isfile(cookie_file):
+            try:
+                text = Path(cookie_file).read_text(encoding="utf-8", errors="ignore")
+                lines = [l for l in text.splitlines() if not l.startswith("#") and l.strip()]
+                domains = set()
+                names = set()
+                for l in lines:
+                    parts = l.split("\t")
+                    if len(parts) >= 7:
+                        domains.add(parts[0])
+                        names.add(parts[5])
+                cookie_details = {
+                    "line_count": len(lines),
+                    "domains": sorted(list(domains)),
+                    "cookie_names": sorted(list(names)),
+                    "has_login_info": "LOGIN_INFO" in names,
+                    "has_sid": any("sid" in n.lower() for n in names),
+                }
+            except Exception as e:
+                cookie_details = {"error": str(e)}
+
+        bgutil_ok = False
+        try:
+            import socket
+            with socket.create_connection(("127.0.0.1", 4416), timeout=0.5):
+                bgutil_ok = True
+        except Exception:
+            pass
+
         return {
             "status": "ok",
             "cookies_found": bool(cookie_file),
+            "cookie_details": cookie_details,
+            "bgutil_alive": bgutil_ok,
+            "extractor_args": ytdlp_extractor_args(),
+            "user_agent": ytdlp_user_agent(),
             "env_cookies": os.environ.get("DROPS_YTDLP_COOKIES", ""),
             "secrets_files": secrets_list,
         }

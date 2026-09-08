@@ -295,3 +295,44 @@ def test_attempt_download_client_tiers_rotate_web_when_cookies_present(monkeypat
     assert "web" in yt_args["player_client"]
     assert "web" not in yt_args.get("player_skip", [])
 
+
+def test_download_multi_source_falls_back_to_unauth_android_on_bot_check(monkeypatch, tmp_path: Path):
+    """When native YouTube download hits bot-check (e.g. challenged cookies on datacenter IP)
+    and SoundCloud has no matching track, it must fall back to unauthenticated android client
+    which succeeds without bot-check."""
+    attempts = []
+
+    def fake_attempt_download(job_dir, url, quality, settings, started, proxy=None, force_unauth=False):
+        attempts.append({"url": url, "force_unauth": force_unauth})
+        if not force_unauth and "youtube.com" in url:
+            raise yt_dlp.utils.DownloadError("Sign in to confirm you’re not a bot")
+        if force_unauth and "youtube.com" in url:
+            return {"title": "Ulo S. - Visitors From The Low End", "duration": 491}
+        raise RuntimeError("Candidate failed")
+
+    monkeypatch.setattr(download_engine, "attempt_download", fake_attempt_download)
+    monkeypatch.setattr(download_engine, "find_soundcloud_match", lambda *args, **kwargs: None)
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    settings = SimpleNamespace(max_duration_seconds=900, max_file_bytes=100_000_000)
+
+    info, source = download_engine.download_multi_source(
+        job_dir=job_dir,
+        job_id="test-unauth-fallback",
+        native_url="https://www.youtube.com/watch?v=qPcX4F5J4fk",
+        artist="Ulo S.",
+        title="Visitors From The Low End",
+        duration=491,
+        quality="320",
+        settings=settings,
+        started=0.0,
+    )
+
+    assert source == "youtube"
+    assert info["title"] == "Ulo S. - Visitors From The Low End"
+    assert len(attempts) >= 2
+    assert attempts[0]["force_unauth"] is False
+    assert attempts[-1]["force_unauth"] is True
+
+
