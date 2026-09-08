@@ -29,13 +29,21 @@ YTDLP_LOCK = threading.Lock()
 _COOKIE_FILE_LOCK = threading.Lock()
 
 
-AUTHED_YTDLP_PLAYER_CLIENTS = ["web", "web_safari", "mweb", "tv_downgraded"]
-UNAUTH_YTDLP_PLAYER_CLIENTS = ["web", "mweb", "android", "ios", "tv"]
+AUTHED_YTDLP_PLAYER_CLIENTS = ["web", "web_embedded", "mweb"]
+UNAUTH_YTDLP_PLAYER_CLIENTS = ["web", "web_embedded", "mweb", "android", "ios", "tv"]
 YTDLP_PLAYER_CLIENTS = UNAUTH_YTDLP_PLAYER_CLIENTS
 
 DEFAULT_DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 )
+
+
+def ytdlp_js_runtimes() -> dict:
+    """Return js_runtimes dict for yt-dlp to solve JavaScript challenges via Node."""
+    import shutil
+    if shutil.which("node") or os.path.isfile("/usr/local/bin/node"):
+        return {"node": {}}
+    return {}
 
 
 def ytdlp_user_agent(has_cookies: bool | None = None) -> str:
@@ -53,7 +61,7 @@ def ytdlp_user_agent(has_cookies: bool | None = None) -> str:
 def ytdlp_extractor_args(has_cookies: bool | None = None) -> dict:
     """youtube player clients to try, shared by download and BPM (same engine).
 
-    When cookies are present, prioritize authenticated web clients ('web', 'web_safari', 'mweb').
+    When cookies are present, prioritize authenticated web clients ('web', 'web_embedded', 'mweb').
     When cookies are absent, if the bundled bgutil-ytdlp-pot-provider sidecar is active,
     allow 'web' and 'mweb' so bgutil can generate PO tokens; otherwise skip 'web' to avoid
     datacenter IP bot-checks.
@@ -72,7 +80,7 @@ def ytdlp_extractor_args(has_cookies: bool | None = None) -> dict:
             yt_args["fetch_pot"] = ["always"]
     elif has_pot:
         yt_args = {
-            "player_client": ["web_safari", "web", "mweb", "tv_downgraded"],
+            "player_client": ["web", "web_embedded", "mweb"],
             "fetch_pot": ["always"],
         }
     else:

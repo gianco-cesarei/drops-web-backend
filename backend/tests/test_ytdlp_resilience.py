@@ -209,7 +209,7 @@ def test_ytdlp_extractor_args_with_cookies_prioritizes_web_and_no_skip():
     args = media_core.ytdlp_extractor_args(has_cookies=True)
     yt = args["youtube"]
     assert "web" in yt["player_client"]
-    assert "web_safari" in yt["player_client"]
+    assert "web_embedded" in yt["player_client"]
     assert "player_skip" not in yt or "web" not in yt["player_skip"]
 
 

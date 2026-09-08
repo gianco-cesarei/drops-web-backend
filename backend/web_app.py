@@ -43,6 +43,7 @@ from media_core import (
     tag_audio_file,
     ytdlp_cookiefile,
     ytdlp_extractor_args,
+    ytdlp_js_runtimes,
     ytdlp_proxy,
     ytdlp_user_agent,
 )
@@ -1144,6 +1145,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         # Test A: Authenticated web with cookies (if available)
         if cookie_file:
             diag_log = DiagLogger()
+            js_rt = ytdlp_js_runtimes()
             opts_web = {
                 "quiet": False,
                 "nocheckcertificate": True,
@@ -1154,6 +1156,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 "extractor_args": ytdlp_extractor_args(has_cookies=True),
                 "logger": diag_log,
             }
+            if js_rt:
+                opts_web["js_runtimes"] = js_rt
             try:
                 with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_web) as ydl:
                     info = ydl.extract_info(url, download=False)
@@ -1189,6 +1193,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "extractor_args": ytdlp_extractor_args(has_cookies=False),
             "logger": diag_log_unauth,
         }
+        if js_rt:
+            opts_unauth["js_runtimes"] = js_rt
         try:
             with YTDLP_LOCK, yt_dlp.YoutubeDL(opts_unauth) as ydl:
                 info = ydl.extract_info(url, download=False)

@@ -20,6 +20,7 @@ from media_core import (
     strip_noise,
     ytdlp_cookiefile,
     ytdlp_extractor_args,
+    ytdlp_js_runtimes,
     ytdlp_source_address,
     ytdlp_user_agent,
 )
@@ -498,6 +499,9 @@ def attempt_download(
         "progress_hooks": [progress],
         "extractor_args": current_extractor_args,
     }
+    js_runtimes = ytdlp_js_runtimes()
+    if js_runtimes:
+        options["js_runtimes"] = js_runtimes
     if cookies:
         options["cookiefile"] = cookies
     if ua:
@@ -510,18 +514,17 @@ def attempt_download(
 
     if has_cookies:
         # Authenticated cookies (from desktop browser) match desktop 'web' client.
-        # Note: android/ios do not support cookies in yt-dlp (yt-dlp skips them).
         CLIENT_TIERS = [
-            ["web", "web_safari", "mweb"],
-            ["web_safari", "web", "mweb"],
+            ["web", "web_embedded"],
+            ["web_embedded", "mweb"],
             ["mweb", "android"],
-            ["android", "tv_downgraded", "tv"],
+            ["android", "ios"],
         ]
     else:
-        # Unauthenticated datacenter IPs: with bgutil POT provider, prioritize web + mweb
+        # Unauthenticated datacenter IPs: with bgutil POT provider, prioritize web + web_embedded
         CLIENT_TIERS = [
-            ["web", "mweb"],
-            ["mweb", "web"],
+            ["web", "web_embedded"],
+            ["web_embedded", "mweb"],
             ["android", "mweb"],
             ["tv", "android"],
         ]
