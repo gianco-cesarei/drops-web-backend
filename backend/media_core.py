@@ -103,11 +103,18 @@ def ytdlp_cookiefile() -> str | None:
 
     # Auto-detect Render Secret Files in /etc/secrets/
     secrets_dir = Path("/etc/secrets")
+    allowed_names = ("cookies.txt", "youtube-cookies.txt", "youtube_cookies.txt")
+    for name in allowed_names:
+        candidate_p = secrets_dir / name
+        try:
+            if candidate_p.is_file() and str(candidate_p) not in candidates:
+                candidates.append(str(candidate_p))
+        except Exception:
+            pass
     if secrets_dir.is_dir():
         try:
-            allowed_names = {"cookies.txt", "youtube-cookies.txt", "youtube_cookies.txt"}
             for p in sorted(secrets_dir.iterdir()):
-                if p.is_file() and p.name.lower() in allowed_names:
+                if p.is_file() and p.name.lower() in allowed_names and str(p) not in candidates:
                     candidates.append(str(p))
         except Exception:
             pass
