@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import yt_dlp
 
-from media_core import YTDLP_LOCK, is_youtube_url, strip_noise, ytdlp_cookiefile, ytdlp_extractor_args
+from media_core import YTDLP_LOCK, is_youtube_url, strip_noise, ytdlp_cookiefile, ytdlp_extractor_args, ytdlp_source_address
 
 logger = logging.getLogger("drops.download")
 
@@ -474,6 +474,9 @@ def attempt_download(job_dir: Path, url: str, quality: str, settings, started: f
         options["cookiefile"] = cookies
     if proxy:
         options["proxy"] = proxy
+    src_addr = ytdlp_source_address()
+    if src_addr:
+        options["source_address"] = src_addr
     CLIENT_TIERS = [
         ["tv", "mweb", "android", "ios"],
         ["web_creator", "tv_embedded", "tv"],

@@ -26,23 +26,41 @@ YTDLP_LOCK = threading.Lock()
 _COOKIE_FILE_LOCK = threading.Lock()
 
 
-YTDLP_PLAYER_CLIENTS = ["mweb", "android", "ios"]
+YTDLP_PLAYER_CLIENTS = ["ios", "mweb", "android", "tv_embedded"]
 
 
 def ytdlp_extractor_args() -> dict:
     """youtube player clients to try, shared by download and BPM (same engine).
 
     Render's datacenter IPs trip YouTube's "Sign in to confirm you're not a
-    bot" check on the default web client; android/ios/mweb clients
-    provide mobile API streams without the desktop web wall.
+    bot" check on the default web client; mobile player clients and skipping
+    desktop web formats avoid triggering bot-checks on datacenter IPs.
     """
     args: dict = {
         "youtube": {
             "player_client": list(YTDLP_PLAYER_CLIENTS),
+            "player_skip": ["web"],
         }
     }
+    po_token = os.environ.get("DROPS_YTDLP_PO_TOKEN", "").strip()
+    if po_token:
+        args["youtube"]["po_token"] = [f"mweb+{po_token}", f"web+{po_token}"]
     args.update(_pot_provider_extractor_args())
     return args
+
+
+def ytdlp_source_address() -> str | None:
+    """Optional IPv6 source address or explicit IP binding for outgoing yt-dlp connections."""
+    custom_ip = os.environ.get("DROPS_SOURCE_ADDRESS", "").strip()
+    if custom_ip:
+        return custom_ip
+    ipv6_prefix = os.environ.get("DROPS_IPV6_SUBNET", "").strip()
+    if ipv6_prefix:
+        import random
+        suffix = ":".join(f"{random.randint(0, 65535):x}" for _ in range(4))
+        clean_prefix = ipv6_prefix.split("/")[0].rstrip(":")
+        return f"{clean_prefix}:{suffix}"
+    return None
 
 
 def _pot_provider_extractor_args() -> dict:
