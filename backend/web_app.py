@@ -741,10 +741,12 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 audio_candidates = [path for path in job_dir.iterdir() if path.is_file() and not path.name.endswith((".part", ".ytdl"))]
             if not audio_candidates:
                 raise RuntimeError("Downloaded artifact missing")
-            source_file = sorted(audio_candidates, key=lambda p: (p.suffix.lower() == ".mp3", p.stat().st_size), reverse=True)[0]
+            target_ext = "flac" if str(quality).lower() in {"hq", "flac"} else "mp3"
+            source_file = sorted(audio_candidates, key=lambda p: (p.suffix.lower() == f".{target_ext}", p.suffix.lower() in {".flac", ".mp3"}, p.stat().st_size), reverse=True)[0]
             if source_file.stat().st_size > settings.max_file_bytes:
                 raise yt_dlp.utils.DownloadError("Download size limit exceeded")
-            filename = safe_filename(str(info.get("title") or title or "audio"), "mp3")
+            final_ext = source_file.suffix.lower().lstrip(".") or target_ext
+            filename = safe_filename(str(info.get("title") or title or "audio"), final_ext)
             artifact = job_dir / filename
             if source_file != artifact:
                 source_file.replace(artifact)

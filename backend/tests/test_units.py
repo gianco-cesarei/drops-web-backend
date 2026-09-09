@@ -337,4 +337,20 @@ def test_pot_provider_extractor_args_custom_env(monkeypatch):
     assert args == {"youtubepot-bgutilhttp": {"base_url": ["http://custom-host:9999"]}}
 
 
+def test_flac_quality_and_tagging(tmp_path):
+    assert download_engine.AUDIO_QUALITY["320"] == "320"
+    assert download_engine.AUDIO_QUALITY["mp3"] == "320"
+    assert download_engine.AUDIO_QUALITY["hq"] == "320"
+    assert "flac" in download_engine.AUDIO_QUALITY
+
+    flac_file = tmp_path / "test.flac"
+    # Write a minimal valid FLAC header
+    flac_file.write_bytes(b"fLaC\x00\x00\x00\"\x10\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x84\x00\x00\x00")
+    # Verify non-flac/non-mp3 rejection
+    txt_file = tmp_path / "test.txt"
+    txt_file.write_text("not audio")
+    assert not media_core.tag_audio_file(txt_file, title="Test")
+
+
+
 

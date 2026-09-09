@@ -27,7 +27,7 @@ from media_core import (
 
 logger = logging.getLogger("drops.download")
 
-AUDIO_QUALITY = {"128": "128", "192": "192", "320": "0", "mp3": "0", "hq": "0"}
+AUDIO_QUALITY = {"128": "128", "192": "192", "320": "320", "mp3": "320", "hq": "320", "flac": "0"}
 
 # Our own abort messages (progress hook / duration check) - never retryable,
 # retrying an oversized/too-long media just repeats the same failure.
@@ -492,11 +492,25 @@ def attempt_download(
     except TypeError:
         ua = ytdlp_user_agent()
 
+    target_codec = "flac" if str(quality).lower() in {"hq", "flac"} else "mp3"
+    postprocessor = {
+        "key": "FFmpegExtractAudio",
+        "preferredcodec": target_codec,
+    }
+    if target_codec == "mp3":
+        postprocessor["preferredquality"] = AUDIO_QUALITY.get(quality, "320")
+
+    if target_codec == "flac":
+        format_spec = "bestaudio[acodec=flac]/bestaudio[protocol^=http]/bestaudio/best"
+    elif is_yt:
+        format_spec = "bestaudio/best"
+    else:
+        format_spec = "bestaudio[acodec=mp3][protocol^=http]/bestaudio[acodec=mp3]/bestaudio/best"
+
     options = {
-        # YouTube audio streams are Opus/AAC (never native MP3), so demand bestaudio/best
-        # directly on YouTube. For SoundCloud/others, prefer native MP3 when available.
-        "format": "bestaudio/best" if is_yt else "bestaudio[acodec=mp3][protocol^=http]/bestaudio[acodec=mp3]/bestaudio/best",
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": AUDIO_QUALITY[quality]}],
+        "format": format_spec,
+        "postprocessors": [postprocessor],
+        "postprocessor_args": ["-ar", "44100"],
         "outtmpl": str(job_dir / "source.%(ext)s"),
         "quiet": True, "no_warnings": True,
         "noplaylist": not is_search,

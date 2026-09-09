@@ -478,10 +478,40 @@ def tag_audio_file(
         return False
 
     target = Path(file_path)
-    if not target.exists() or target.suffix.lower() != ".mp3":
+    if not target.exists() or target.suffix.lower() not in {".mp3", ".flac"}:
         return False
 
     try:
+        if target.suffix.lower() == ".flac":
+            from mutagen.flac import FLAC, Picture
+            audio = FLAC(target)
+            if title:
+                audio["title"] = str(title)
+            if artist:
+                audio["artist"] = str(artist)
+            if album:
+                audio["album"] = str(album)
+            if label:
+                audio["organization"] = str(label)
+            if year:
+                audio["date"] = str(year)
+            if genre:
+                audio["genre"] = str(genre)
+            if bpm:
+                audio["bpm"] = str(int(round(float(bpm))))
+            if cover_data:
+                pic = Picture()
+                pic.type = 3  # Front cover
+                pic.mime = cover_mime
+                pic.desc = "Cover"
+                pic.data = cover_data
+                audio.clear_pictures()
+                audio.add_picture(pic)
+            audio.save()
+            return True
+
+        # MP3 ID3v2.3 tags
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPUB, TDRC, TCON, TBPM, APIC, ID3NoHeaderError
         try:
             tags = ID3(target)
         except ID3NoHeaderError:
