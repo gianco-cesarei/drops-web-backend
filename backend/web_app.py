@@ -454,11 +454,14 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         store.interrupt_active_jobs(settings.artifact_ttl_seconds)
         cleanup()
         executor = ThreadPoolExecutor(max_workers=settings.max_concurrent, thread_name_prefix="drops-web")
+        bpm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="drops-bpm")
         app.state.executor = executor
+        app.state.bpm_executor = bpm_executor
         bpm_jobs.bind_executor(executor)
         try:
             yield
         finally:
+            bpm_executor.shutdown(wait=False, cancel_futures=True)
             executor.shutdown(wait=True, cancel_futures=True)
             cleanup()
 
@@ -851,7 +854,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             def _bpm_async(path=artifact, jid=job_id, tid=track_id, t=final_title, a=artist,
                            lbl=tag_label, yr=tag_year, g=genre_str, cov=cover_data):
                 try:
-                    result = analyze_bpm(path, max_seconds=120)
+                    result = analyze_bpm(path, max_seconds=45.0)
                 except Exception as exc:
                     logger.info("bpm skip job_id=%s detail=%r", jid, str(exc)[:200])
                     return
@@ -869,7 +872,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 except Exception as tag_exc:
                     logger.info("bpm retag skip job_id=%s detail=%r", jid, str(tag_exc)[:100])
 
-            threading.Thread(target=_bpm_async, name=f"bpm-{job_id}", daemon=True).start()
+            if hasattr(app.state, "bpm_executor"):
+                app.state.bpm_executor.submit(_bpm_async)
+            else:
+                threading.Thread(target=_bpm_async, name=f"bpm-{job_id}", daemon=True).start()
         except yt_dlp.utils.DownloadError as exc:
             # DownloadError carries yt-dlp's own diagnosis (e.g. YouTube's bot
             # check, geo-block, age gate) - surface it so the UI shows *why*
@@ -1065,7 +1071,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             # desktop app writes the definitive BPM tag at USB-export time.
             def _bpm_and_cleanup(path=artifact, jid=job_id, tid=track_id, cloud=bool(track_id and r2_key)):
                 try:
-                    result = analyze_bpm(path, max_seconds=120)
+                    result = analyze_bpm(path, max_seconds=45.0)
                     bpm_value = result["bpm"]
                 except Exception as exc:
                     logger.info("bpm skip job_id=%s detail=%r", jid, str(exc)[:200])
@@ -1084,7 +1090,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                     # Cloud is the source of truth; free Render's disk now.
                     shutil.rmtree(job_dir, ignore_errors=True)
 
-            threading.Thread(target=_bpm_and_cleanup, name=f"ytd-bpm-{job_id}", daemon=True).start()
+            if hasattr(app.state, "bpm_executor"):
+                app.state.bpm_executor.submit(_bpm_and_cleanup)
+            else:
+                threading.Thread(target=_bpm_and_cleanup, name=f"ytd-bpm-{job_id}", daemon=True).start()
         except yt_dlp.utils.DownloadError as exc:
             logger.error("youtube-direct worker failed job_id=%s error_type=DownloadError", job_id)
             shutil.rmtree(job_dir, ignore_errors=True)

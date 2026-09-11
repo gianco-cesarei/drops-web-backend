@@ -10,15 +10,16 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from media_core import FFMPEG_SEMAPHORE
+    from media_core import FFMPEG_SEMAPHORE, BPM_SEMAPHORE
 except ImportError:
-    FFMPEG_SEMAPHORE = threading.Semaphore(2)
+    FFMPEG_SEMAPHORE = threading.Semaphore(1)
+    BPM_SEMAPHORE = threading.Semaphore(1)
 
 
 ANALYZER_SOURCE = "drops-local-rhythm-v1"
 MIN_BPM = 50.0
 MAX_BPM = 220.0
-MAX_ANALYSIS_SECONDS = 180.0
+MAX_ANALYSIS_SECONDS = 60.0
 SAMPLE_RATE = 11025
 FRAME_LENGTH = 1024
 HOP_LENGTH = 256
@@ -92,78 +93,82 @@ def analyze_bpm(
     if not path.is_file():
         raise BpmAnalysisError("File audio non trovato")
 
-    audio, np = _decode_audio(path, ffmpeg_path, max_seconds)
-    try:
-        frames = np.lib.stride_tricks.sliding_window_view(audio, FRAME_LENGTH)[::HOP_LENGTH]
-        window = np.hanning(FRAME_LENGTH).astype(np.float32)
-        magnitude = np.abs(np.fft.rfft(frames * window, axis=1))
-        log_magnitude = np.log1p(magnitude)
-        flux = np.maximum(np.diff(log_magnitude, axis=0), 0.0).sum(axis=1)
+    with BPM_SEMAPHORE:
+        audio, np = _decode_audio(path, ffmpeg_path, max_seconds)
+        try:
+            frames = np.lib.stride_tricks.sliding_window_view(audio, FRAME_LENGTH)[::HOP_LENGTH]
+            window = np.hanning(FRAME_LENGTH).astype(np.float32)
+            magnitude = np.abs(np.fft.rfft(frames * window, axis=1))
+            log_magnitude = np.log1p(magnitude)
+            flux = np.maximum(np.diff(log_magnitude, axis=0), 0.0).sum(axis=1)
 
-        local_mean = np.convolve(flux, np.ones(16) / 16.0, mode="same")
-        onset = np.maximum(flux - local_mean, 0.0)
-        onset_max = float(np.max(onset)) if onset.size else 0.0
-        if onset_max <= 1e-9:
-            raise BpmAnalysisError("Ritmo non rilevabile")
-        onset = onset / onset_max
+            local_mean = np.convolve(flux, np.ones(16) / 16.0, mode="same")
+            onset = np.maximum(flux - local_mean, 0.0)
+            onset_max = float(np.max(onset)) if onset.size else 0.0
+            if onset_max <= 1e-9:
+                raise BpmAnalysisError("Ritmo non rilevabile")
+            onset = onset / onset_max
 
-        fft_size = 1 << (2 * onset.size - 1).bit_length()
-        spectrum = np.fft.rfft(onset, fft_size)
-        autocorrelation = np.fft.irfft(spectrum * np.conj(spectrum), fft_size)[: onset.size]
-        autocorrelation /= np.arange(onset.size, 0, -1)
+            fft_size = 1 << (2 * onset.size - 1).bit_length()
+            spectrum = np.fft.rfft(onset, fft_size)
+            autocorrelation = np.fft.irfft(spectrum * np.conj(spectrum), fft_size)[: onset.size]
+            autocorrelation /= np.arange(onset.size, 0, -1)
 
-        frame_rate = SAMPLE_RATE / HOP_LENGTH
-        min_lag = max(1, int(frame_rate * 60.0 / MAX_BPM))
-        max_lag = min(onset.size - 2, int(frame_rate * 60.0 / MIN_BPM) + 1)
-        if max_lag <= min_lag:
-            raise BpmAnalysisError("Audio troppo breve per stimare periodicità")
+            frame_rate = SAMPLE_RATE / HOP_LENGTH
+            min_lag = max(1, int(frame_rate * 60.0 / MAX_BPM))
+            max_lag = min(onset.size - 2, int(frame_rate * 60.0 / MIN_BPM) + 1)
+            if max_lag <= min_lag:
+                raise BpmAnalysisError("Audio troppo breve per stimare periodicità")
 
-        lags = np.arange(min_lag, max_lag + 1)
-        bpms = 60.0 * frame_rate / lags
-        # Prior molto largo centrato su 120: riduce errori half/double senza
-        # impedire valori validi tra 50 e 220 BPM.
-        prior = np.exp(-0.5 * (np.log2(bpms / 120.0) / 0.75) ** 2)
-        scores = autocorrelation[lags] * prior
-        peak_index = int(np.argmax(scores))
-        peak_lag = float(lags[peak_index])
+            lags = np.arange(min_lag, max_lag + 1)
+            bpms = 60.0 * frame_rate / lags
+            # Prior molto largo centrato su 120: riduce errori half/double senza
+            # impedire valori validi tra 50 e 220 BPM.
+            prior = np.exp(-0.5 * (np.log2(bpms / 120.0) / 0.75) ** 2)
+            scores = autocorrelation[lags] * prior
+            peak_index = int(np.argmax(scores))
+            peak_lag = float(lags[peak_index])
 
-        # Interpolazione parabolica: supera risoluzione intera dei frame.
-        if 0 < peak_index < scores.size - 1:
-            left, center, right = scores[peak_index - 1 : peak_index + 2]
-            denominator = float(left - 2.0 * center + right)
-            if abs(denominator) > 1e-12:
-                peak_lag += 0.5 * float(left - right) / denominator
+            # Interpolazione parabolica: supera risoluzione intera dei frame.
+            if 0 < peak_index < scores.size - 1:
+                left, center, right = scores[peak_index - 1 : peak_index + 2]
+                denominator = float(left - 2.0 * center + right)
+                if abs(denominator) > 1e-12:
+                    peak_lag += 0.5 * float(left - right) / denominator
 
-        tempo = 60.0 * frame_rate / peak_lag
-        if not math.isfinite(tempo) or not MIN_BPM <= tempo <= MAX_BPM:
-            raise BpmAnalysisError("Stima BPM fuori intervallo")
+            tempo = 60.0 * frame_rate / peak_lag
+            if not math.isfinite(tempo) or not MIN_BPM <= tempo <= MAX_BPM:
+                raise BpmAnalysisError("Stima BPM fuori intervallo")
 
-        raw_peak = float(autocorrelation[int(round(peak_lag))])
-        zero_lag = float(autocorrelation[0]) or 1.0
-        periodicity = max(0.0, min(1.0, raw_peak / zero_lag * 4.0))
-        excluded = np.ones(scores.size, dtype=bool)
-        excluded[max(0, peak_index - 2) : peak_index + 3] = False
-        second = float(np.max(scores[excluded])) if np.any(excluded) else 0.0
-        separation = max(0.0, min(1.0, (float(scores[peak_index]) - second) / (abs(float(scores[peak_index])) + 1e-9) * 4.0))
-        confidence = round(0.75 * periodicity + 0.25 * separation, 3)
+            raw_peak = float(autocorrelation[int(round(peak_lag))])
+            zero_lag = float(autocorrelation[0]) or 1.0
+            periodicity = max(0.0, min(1.0, raw_peak / zero_lag * 4.0))
+            excluded = np.ones(scores.size, dtype=bool)
+            excluded[max(0, peak_index - 2) : peak_index + 3] = False
+            second = float(np.max(scores[excluded])) if np.any(excluded) else 0.0
+            separation = max(0.0, min(1.0, (float(scores[peak_index]) - second) / (abs(float(scores[peak_index])) + 1e-9) * 4.0))
+            confidence = round(0.75 * periodicity + 0.25 * separation, 3)
 
-        local_peaks = (
-            (onset[1:-1] > onset[:-2])
-            & (onset[1:-1] >= onset[2:])
-            & (onset[1:-1] >= np.percentile(onset, 75))
-        )
-        seconds = float(audio.size) / SAMPLE_RATE
-        return {
-            "bpm": round(tempo, 2),
-            "bpm_rounded": int(round(tempo)),
-            "bpm_confidence": confidence,
-            "bpm_candidates": _tempo_candidates(tempo),
-            "bpm_source": ANALYZER_SOURCE,
-            "bpm_manual": False,
-            "bpm_beats_detected": int(np.count_nonzero(local_peaks)),
-            "bpm_analyzed_seconds": round(seconds, 2),
-        }
-    except BpmAnalysisError:
-        raise
-    except Exception as exc:
-        raise BpmAnalysisError(f"Analisi BPM fallita: {exc}") from exc
+            local_peaks = (
+                (onset[1:-1] > onset[:-2])
+                & (onset[1:-1] >= onset[2:])
+                & (onset[1:-1] >= np.percentile(onset, 75))
+            )
+            seconds = float(audio.size) / SAMPLE_RATE
+            res = {
+                "bpm": round(tempo, 2),
+                "bpm_rounded": int(round(tempo)),
+                "bpm_confidence": confidence,
+                "bpm_candidates": _tempo_candidates(tempo),
+                "bpm_source": ANALYZER_SOURCE,
+                "bpm_manual": False,
+                "bpm_beats_detected": int(np.count_nonzero(local_peaks)),
+                "bpm_analyzed_seconds": round(seconds, 2),
+            }
+            import gc
+            gc.collect()
+            return res
+        except BpmAnalysisError:
+            raise
+        except Exception as exc:
+            raise BpmAnalysisError(f"Analisi BPM fallita: {exc}") from exc

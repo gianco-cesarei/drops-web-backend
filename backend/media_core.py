@@ -28,9 +28,10 @@ ALLOWED_DOMAINS = ("youtube.com", "youtu.be", "soundcloud.com", "music.youtube.c
 YTDLP_LOCK = threading.Lock()
 _COOKIE_FILE_LOCK = threading.Lock()
 
-# Concurrency gate for heavy FFmpeg processes (transcoding / audio decoding):
-# limits parallel FFmpeg processes to prevent exceeding Render's CPU/RAM thresholds.
-FFMPEG_SEMAPHORE = threading.Semaphore(int(os.environ.get("DROPS_FFMPEG_MAX_CONCURRENT", "2")))
+# Concurrency gates for Render's 512MB RAM threshold:
+# 1 FFmpeg process at a time and 1 BPM analysis at a time prevents OOM crashes.
+FFMPEG_SEMAPHORE = threading.Semaphore(int(os.environ.get("DROPS_FFMPEG_MAX_CONCURRENT", "1")))
+BPM_SEMAPHORE = threading.Semaphore(int(os.environ.get("DROPS_BPM_MAX_CONCURRENT", "1")))
 
 
 AUTHED_YTDLP_PLAYER_CLIENTS = ["web", "web_embedded", "web_remix", "mweb", "android"]
