@@ -116,6 +116,38 @@ class WebStore:
         with self.connect() as db:
             return db.execute("SELECT * FROM jobs WHERE id=? AND owner=?", (job_id, owner)).fetchone()
 
+    def find_ready_job(
+        self,
+        owner: str,
+        url: str | None = None,
+        artist: str | None = None,
+        title: str | None = None,
+    ):
+        """Find an existing ready job for this owner matching URL or artist+title."""
+        with self.connect() as db:
+            if url:
+                row = db.execute(
+                    "SELECT * FROM jobs WHERE owner=? AND source_url=? AND status='ready' ORDER BY updated_at DESC LIMIT 1",
+                    (owner, url),
+                ).fetchone()
+                if row:
+                    return row
+            if title and artist:
+                row = db.execute(
+                    "SELECT * FROM jobs WHERE owner=? AND lower(title)=lower(?) AND lower(artist)=lower(?) AND status='ready' ORDER BY updated_at DESC LIMIT 1",
+                    (owner, title.strip(), artist.strip()),
+                ).fetchone()
+                if row:
+                    return row
+            elif title:
+                row = db.execute(
+                    "SELECT * FROM jobs WHERE owner=? AND lower(title)=lower(?) AND status='ready' ORDER BY updated_at DESC LIMIT 1",
+                    (owner, title.strip()),
+                ).fetchone()
+                if row:
+                    return row
+            return None
+
     def get_job_by_id(self, job_id: str):
         """Owner-agnostic lookup for the trusted background worker (no HTTP request/owner in scope)."""
         with self.connect() as db:

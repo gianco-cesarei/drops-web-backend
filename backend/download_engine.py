@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import yt_dlp
 
 from media_core import (
+    FFMPEG_SEMAPHORE,
     YTDLP_LOCK,
     is_youtube_url,
     strip_noise,
@@ -597,8 +598,9 @@ def attempt_download(
         if not acquired:
             raise yt_dlp.utils.DownloadError("Download worker lock timeout")
         try:
-            with yt_dlp.YoutubeDL(current_options) as ydl:
-                info = ydl.extract_info(target_url, download=True)
+            with FFMPEG_SEMAPHORE:
+                with yt_dlp.YoutubeDL(current_options) as ydl:
+                    info = ydl.extract_info(target_url, download=True)
             break
         except Exception as exc:
             last_extract_error = exc

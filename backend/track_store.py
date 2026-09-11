@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import String, Float, Text, create_engine, select
+from sqlalchemy import String, Float, Text, create_engine, select, delete
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 logger = logging.getLogger("drops.tracks")
@@ -138,6 +138,48 @@ class TrackStore:
         with Session(self.engine) as session:
             row = session.get(Track, track_id)
             return row.public() if row else None
+
+    def find_track_by_meta(self, user_id: str, artist: str | None, title: str | None) -> dict[str, Any] | None:
+        """Look up a track in the user's cloud library by artist and title (case-insensitive, normalized)."""
+        if not title:
+            return None
+        clean_title = title.strip()
+        clean_artist = (artist or "").strip()
+
+        with Session(self.engine) as session:
+            # 1. Exact case-insensitive match on artist + title if artist provided
+            if clean_artist:
+                stmt = select(Track).where(
+                    Track.user_id == user_id,
+                    Track.title.ilike(clean_title),
+                    Track.artist.ilike(clean_artist),
+                )
+                match = session.scalars(stmt).first()
+                if match:
+                    return match.public()
+
+            # 2. Match by title for this user
+            stmt = select(Track).where(
+                Track.user_id == user_id,
+                Track.title.ilike(clean_title),
+            )
+            match = session.scalars(stmt).first()
+            if match:
+                return match.public()
+
+            # 3. If title contains "Artist - Title", try splitting
+            if " - " in clean_title and not clean_artist:
+                parts = clean_title.split(" - ", 1)
+                stmt = select(Track).where(
+                    Track.user_id == user_id,
+                    Track.artist.ilike(parts[0].strip()),
+                    Track.title.ilike(parts[1].strip()),
+                )
+                match = session.scalars(stmt).first()
+                if match:
+                    return match.public()
+
+            return None
 
     def list_tracks(self, user_id: str, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = (

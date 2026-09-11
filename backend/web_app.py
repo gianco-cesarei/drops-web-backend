@@ -33,6 +33,7 @@ from discogs_agent import DiscogsClient
 from download_engine import AUDIO_QUALITY, attempt_download, download_multi_source
 from folder_store import FolderStore
 from media_core import (
+    FFMPEG_SEMAPHORE,
     YTDLP_LOCK,
     is_supported_url,
     is_youtube_url,
@@ -267,6 +268,11 @@ class WebDownloadRequest(BaseModel):
     artist: str | None = None
     title: str | None = None
     cover_url: str | None = None
+
+
+class WebBatchDownloadRequest(BaseModel):
+    urls: list[str]
+    quality: str = "320"
 
 
 class YoutubeDirectRequest(BaseModel):
@@ -723,6 +729,28 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 store.update_job(job_id, **update)
 
         t_after_enrich = time.monotonic()
+        # Instant duplicate skip: if track is already in the user's catalog (Postgres / R2), skip downloading!
+        if artist and title and owner:
+            try:
+                existing_track = tracks.find_track_by_meta(owner, artist, title)
+                if existing_track and existing_track.get("r2_key"):
+                    logger.info("process_job instant duplicate skip: owner=%s track_id=%s title=%r", owner, existing_track["track_id"], existing_track.get("title"))
+                    store.update_job(
+                        job_id,
+                        status="ready",
+                        title=existing_track.get("title") or title,
+                        artist=existing_track.get("artist") or artist,
+                        track_id=existing_track["track_id"],
+                        r2_key=existing_track["r2_key"],
+                        bpm=existing_track.get("bpm"),
+                        source="cloud",
+                        expires_at=time.time() + settings.artifact_ttl_seconds,
+                    )
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                    return
+            except Exception as dup_err:
+                logger.warning("process_job duplicate check error: %s", dup_err)
+
         try:
             store.update_job(job_id, status="downloading")
             info, source = download_multi_source(
@@ -933,6 +961,28 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         genre_str = (req_genre.strip() if req_genre and req_genre.strip() else None) or (
             ", ".join(styles[:3]) if styles else None
         )
+
+        # Instant duplicate skip: if track is already in the user's catalog (Postgres / R2), skip downloading!
+        if artist and title and owner:
+            try:
+                existing_track = tracks.find_track_by_meta(owner, artist, title)
+                if existing_track and existing_track.get("r2_key"):
+                    logger.info("process_youtube_direct instant duplicate skip: owner=%s track_id=%s title=%r", owner, existing_track["track_id"], existing_track.get("title"))
+                    store.update_job(
+                        job_id,
+                        status="ready",
+                        title=existing_track.get("title") or title,
+                        artist=existing_track.get("artist") or artist,
+                        track_id=existing_track["track_id"],
+                        r2_key=existing_track["r2_key"],
+                        bpm=existing_track.get("bpm"),
+                        source="cloud",
+                        expires_at=time.time() + settings.artifact_ttl_seconds,
+                    )
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                    return
+            except Exception as dup_err:
+                logger.warning("process_youtube_direct duplicate check error: %s", dup_err)
 
         try:
             store.update_job(job_id, status="downloading")
@@ -1349,6 +1399,50 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             except Exception as e:
                 logger.warning("resolve_track_oembed failed for %s: %s", request.url, e)
                 recognized = {}
+
+        target_artist = request.artist or recognized.get("artist")
+        target_title = request.title or recognized.get("title")
+
+        # Instant Duplicate Skip Check:
+        # 1. Check local ready jobs for this URL or artist+title
+        existing_local = store.find_ready_job(owner, url=request.url, artist=target_artist, title=target_title)
+        if existing_local:
+            logger.info("instant duplicate skip (local job): owner=%s url=%s title=%r", owner, request.url, existing_local["title"])
+            return public_job(existing_local)
+
+        # 2. Check Postgres tracks for this user
+        if target_title:
+            try:
+                existing_track = tracks.find_track_by_meta(owner, target_artist, target_title)
+                if existing_track and existing_track.get("r2_key"):
+                    logger.info("instant duplicate skip (postgres track): owner=%s track_id=%s title=%r", owner, existing_track["track_id"], existing_track.get("title"))
+                    store.create_job_if_capacity(
+                        job_id,
+                        owner,
+                        request.url,
+                        "audio",
+                        request.quality,
+                        settings.max_duration_seconds + settings.artifact_ttl_seconds,
+                        settings.max_queued + settings.max_concurrent,
+                        title=existing_track.get("title") or target_title,
+                        artist=existing_track.get("artist") or target_artist,
+                        cover_url=request.cover_url or recognized.get("cover_url"),
+                        raw_title=recognized.get("raw_title"),
+                        duration=recognized.get("duration"),
+                    )
+                    store.update_job(
+                        job_id,
+                        status="ready",
+                        track_id=existing_track["track_id"],
+                        r2_key=existing_track["r2_key"],
+                        bpm=existing_track.get("bpm"),
+                        source="cloud",
+                        expires_at=time.time() + settings.artifact_ttl_seconds,
+                    )
+                    return public_job(store.get_job(job_id, owner))
+            except Exception as d_exc:
+                logger.warning("duplicate check error in start_download: %s", d_exc)
+
         accepted = store.create_job_if_capacity(
             job_id,
             owner,
@@ -1357,8 +1451,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             request.quality,
             settings.max_duration_seconds + settings.artifact_ttl_seconds,
             settings.max_queued + settings.max_concurrent,
-            title=request.title or recognized.get("title"),
-            artist=request.artist or recognized.get("artist"),
+            title=target_title,
+            artist=target_artist,
             cover_url=request.cover_url or recognized.get("cover_url"),
             raw_title=recognized.get("raw_title"),
             duration=recognized.get("duration"),
@@ -1367,6 +1461,115 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=429, detail="Download queue full")
         app.state.executor.submit(process_job, job_id, request.url, request.quality)
         return public_job(store.get_job(job_id, owner))
+
+    @app.post("/api/v1/downloads/batch", status_code=202)
+    def batch_downloads(
+        request: WebBatchDownloadRequest,
+        owner: str = Depends(current_owner),
+        _: None = Depends(require_csrf_origin),
+    ):
+        if request.quality not in AUDIO_QUALITY:
+            raise HTTPException(status_code=400, detail="Invalid quality")
+        if not request.urls:
+            raise HTTPException(status_code=400, detail="No URLs provided")
+
+        clean_urls = []
+        seen = set()
+        for raw_u in request.urls[:100]:
+            u = (raw_u or "").strip()
+            if u and u not in seen and is_supported_url(u):
+                seen.add(u)
+                clean_urls.append(u)
+
+        if not clean_urls:
+            raise HTTPException(status_code=400, detail="No supported URLs found in batch")
+
+        # Fast parallel oEmbed metadata pre-fetching (bounded light worker pool, no yt-dlp/ffmpeg)
+        meta_by_url: dict[str, dict[str, Any]] = {}
+        def _fetch_meta(url_str: str):
+            try:
+                rec = resolve_track_oembed(url_str)
+                if rec:
+                    meta_by_url[url_str] = rec
+            except Exception:
+                pass
+
+        if len(clean_urls) > 1:
+            with ThreadPoolExecutor(max_workers=min(8, len(clean_urls)), thread_name_prefix="drops-meta") as meta_exec:
+                list(meta_exec.map(_fetch_meta, clean_urls))
+        else:
+            _fetch_meta(clean_urls[0])
+
+        created_jobs = []
+        for url in clean_urls:
+            job_id = str(uuid.uuid4())
+            rec = meta_by_url.get(url) or {}
+            target_artist = rec.get("artist")
+            target_title = rec.get("title")
+
+            # 1. Local ready job duplicate check
+            existing_local = store.find_ready_job(owner, url=url, artist=target_artist, title=target_title)
+            if existing_local:
+                logger.info("batch instant duplicate skip (local job): owner=%s url=%s", owner, url)
+                created_jobs.append(public_job(existing_local))
+                continue
+
+            # 2. Postgres tracks duplicate check
+            if target_title:
+                try:
+                    existing_track = tracks.find_track_by_meta(owner, target_artist, target_title)
+                    if existing_track and existing_track.get("r2_key"):
+                        logger.info("batch instant duplicate skip (postgres track): owner=%s track_id=%s", owner, existing_track["track_id"])
+                        store.create_job_if_capacity(
+                            job_id,
+                            owner,
+                            url,
+                            "audio",
+                            request.quality,
+                            settings.max_duration_seconds + settings.artifact_ttl_seconds,
+                            settings.max_queued + settings.max_concurrent,
+                            title=existing_track.get("title") or target_title,
+                            artist=existing_track.get("artist") or target_artist,
+                            cover_url=rec.get("cover_url"),
+                            raw_title=rec.get("raw_title"),
+                            duration=rec.get("duration"),
+                        )
+                        store.update_job(
+                            job_id,
+                            status="ready",
+                            track_id=existing_track["track_id"],
+                            r2_key=existing_track["r2_key"],
+                            bpm=existing_track.get("bpm"),
+                            source="cloud",
+                            expires_at=time.time() + settings.artifact_ttl_seconds,
+                        )
+                        created_jobs.append(public_job(store.get_job(job_id, owner)))
+                        continue
+                except Exception as dup_exc:
+                    logger.warning("batch duplicate check error url=%s detail=%r", url, str(dup_exc)[:100])
+
+            # 3. New track -> enqueue for background download
+            accepted = store.create_job_if_capacity(
+                job_id,
+                owner,
+                url,
+                "audio",
+                request.quality,
+                settings.max_duration_seconds + settings.artifact_ttl_seconds,
+                settings.max_queued + settings.max_concurrent,
+                title=target_title,
+                artist=target_artist,
+                cover_url=rec.get("cover_url"),
+                raw_title=rec.get("raw_title"),
+                duration=rec.get("duration"),
+            )
+            if accepted:
+                app.state.executor.submit(process_job, job_id, url, request.quality)
+                created_jobs.append(public_job(store.get_job(job_id, owner)))
+            else:
+                logger.warning("batch download queue full for url=%s", url)
+
+        return {"downloads": created_jobs}
 
     # --- Sezione 1 · Task 1.1: YouTube-only direct download -----------------
     @app.post("/api/download/youtube-direct", status_code=202)

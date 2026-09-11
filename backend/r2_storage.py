@@ -293,6 +293,17 @@ def head_object(key: str) -> dict:
         raise R2Error(f"head failed: {type(exc).__name__}") from exc
 
 
+def object_exists(key: str) -> bool:
+    """Return True if key exists in R2, False otherwise."""
+    if not is_configured() or not key:
+        return False
+    try:
+        head_object(key)
+        return True
+    except (R2NotFoundError, R2Error):
+        return False
+
+
 def get_object(key: str, *, range_header: str | None = None) -> dict:
     """GET ``key``, optionally scoped to ``range_header`` (an RFC 7233 value
     like ``bytes=0-1023``, forwarded to R2 as-is).

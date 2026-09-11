@@ -5,8 +5,14 @@ from __future__ import annotations
 import math
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
+
+try:
+    from media_core import FFMPEG_SEMAPHORE
+except ImportError:
+    FFMPEG_SEMAPHORE = threading.Semaphore(2)
 
 
 ANALYZER_SOURCE = "drops-local-rhythm-v1"
@@ -58,13 +64,14 @@ def _decode_audio(path: Path, ffmpeg_path: str | None, max_seconds: float):
         "pipe:1",
     ]
     try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=max_seconds + 30,
-            check=False,
-        )
+        with FFMPEG_SEMAPHORE:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=max_seconds + 30,
+                check=False,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise BpmAnalysisError(f"Decodifica audio fallita: {exc}") from exc
     if result.returncode != 0:
