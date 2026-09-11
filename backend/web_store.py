@@ -96,7 +96,15 @@ class WebStore:
         now = time.time()
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            active = db.execute(f"SELECT COUNT(*) FROM jobs WHERE status IN ({','.join('?' * len(ACTIVE_STATUSES))})", ACTIVE_STATUSES).fetchone()[0]
+            # Auto-expire orphan active jobs older than 5 minutes without updates so they never permanently block capacity
+            db.execute(
+                f"UPDATE jobs SET status='error', error='Download expired', updated_at=? WHERE status IN ({','.join('?' * len(ACTIVE_STATUSES))}) AND updated_at < ?",
+                (now, *ACTIVE_STATUSES, now - 300),
+            )
+            active = db.execute(
+                f"SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ({','.join('?' * len(ACTIVE_STATUSES))})",
+                (owner, *ACTIVE_STATUSES)
+            ).fetchone()[0]
             if active >= capacity:
                 return False
             db.execute(

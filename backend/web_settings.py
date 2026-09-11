@@ -83,7 +83,7 @@ class WebSettings:
             cookie_secure=_bool("DROPS_WEB_COOKIE_SECURE", True),
             session_ttl_seconds=_positive_int("DROPS_WEB_SESSION_TTL_SECONDS", 86400),
             artifact_ttl_seconds=_positive_int("DROPS_WEB_ARTIFACT_TTL_SECONDS", 2592000),
-            max_queued=_positive_int("DROPS_WEB_MAX_QUEUED", 100),
+            max_queued=_positive_int("DROPS_WEB_MAX_QUEUED", 250),
             max_concurrent=_positive_int("DROPS_WEB_MAX_CONCURRENT", 2),
             max_duration_seconds=_positive_int("DROPS_WEB_MAX_DURATION_SECONDS", 900),
             max_file_bytes=_positive_int("DROPS_WEB_MAX_FILE_BYTES", 100_000_000),
