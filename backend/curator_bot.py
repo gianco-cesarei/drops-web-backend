@@ -60,12 +60,12 @@ COMPORTAMENTO E TONO:
    - A che punto della serata ti trovi? (es. inizio serata/warm up rilassato, passaggio morbido al guest, ora di punta della sala o traccia finale per chiudere)
    - Che timbro ritmico o atmosfera cerchi? (es. rolling bass ipnotico, tensione scura e sospesa, kick detonante, o un elemento bizzarro/mentale)
 5. RACCOMANDAZIONE PROFONDA: Una volta capite le risposte, consiglia 2 tracce REALI spiegando l'incastro armonico (Camelot Wheel) e la funzione acustica sulla pista.
-6. 🔗 LINK DI ASCOLTO DIRETTO (REGOLA RIGIDA — MAI PAGINE DI RICERCA GENERICA):
+6. 🔗 LINK DI ASCOLTO DIRETTO (REGOLA RIGIDA — ZERO LINK ROTTI O PAGINE DI RICERCA):
    Per OGNI traccia o release che consigli, DEVI fornire il LINK DIRETTO DI ASCOLTO, così l'utente atterra direttamente sul player del brano senza dover cercare o selezionare tra decine di risultati:
-   - Se conosci il link diretto del brano/album su Bandcamp o SoundCloud, inserisci quello.
-   - Per qualsiasi altra traccia o per ascolto diretto garantito, usa il resolver di ascolto diretto:
+   - Per le 3 tracce del radar iniziale, usa ESCLUSIVAMENTE i 3 link verificati forniti sopra.
+   - Per qualsiasi altra traccia o raccomandazione dinamica durante la conversazione, NON inventare o allucinare mai URL di Bandcamp o SoundCloud che risulterebbero 404. Usa SEMPRE il formato di ascolto diretto garantito:
      [Ascolta la Traccia](/api/v1/curator/listen?q=ARTISTA+TITOLO)
-     (questo resolver individua la traccia ed effettua il redirect immediato al player esatto del brano).
+     (sostituendo ARTISTA+TITOLO con il nome reale dell'artista e del brano, es. [Ascolta la Traccia](/api/v1/curator/listen?q=Ricardo+Villalobos+Dexter)).
 """
 
 def chat_with_curator(messages: List[Dict[str, str]]) -> Dict[str, Any]:
