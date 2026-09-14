@@ -86,6 +86,7 @@ Per alimentare le ricerche future di DropAgent con massima selettività:
   * *Perlon* (Germania - Zip, Ricardo Villalobos, Thomas Melchior)
   * *Pleasure Club* (UK - Bobby., Harry McCanna)
   * *Ilian Tape* (Monaco - Skee Mask, Zenker Brothers, Andrea)
+  * *Atomnation* (Amsterdam - Dark disco, chuggers, melodic electronic)
   * *Telum / Amphia* (Romania - Raresh, Petre Inspirescu, Rhadoo, Cristi Cons)
   * *Time Passages* (Berlino - Binh)
   * *Yaji Records* (Giappone/Berlino)
@@ -112,10 +113,15 @@ Le conferme e gli scarti del selector definiscono la linea di demarcazione estet
   * *BOBBY. - Strange Fantasy* (Pleasure Club) — Prog-house/deep hypno da climax mentale (8A - 129 BPM)
   * *Skee Mask - Routine* (Ilian Tape) — Breakbeat introspettivo, subacqueo e mentale (4A - 123 BPM, forzato a Warm Up per densità emotiva)
   * *So Inagawa - Logo Queen* (Cabaret Recordings) — Microhouse pura, felpata e ipnotica a 118 BPM (10B - 118 BPM)
+  * *Bufi & Mordisco - Los Pilares* (Atomnation) — Rugged dark disco chugger, slapping hits e lead cosmici (11A - 118 BPM, collocato in Tension Bridges)
   * **Elementi distintivi**: Slap bass rotondi, sintetizzatori analogici caldi, arpeggiatori nostalgici anni '80/'90, melodie che toccano corde emotive profonde, vocalità sussurrate o distaccate, assenza di drop commerciali.
 
 * **Regola di Calibrazione Warm Up (BPM vs Densità Emotiva)**:
   * Tracce fino a 122-124 BPM che non usano una cassa dritta 4/4 compressa ma si sviluppano su pad atmosferici, break sincopati e groove soffusi (come *Skee Mask - Routine*) non sono "Groove Building" per far ballare la pista, ma **strumenti di ipnosi da Warm Up** per preparare la mente del clubber.
+
+* **Regola di Calibrazione Dark Disco / Chuggers (BPM Lenti con Densità da Peak Time)**:
+  * **La trappola del numero 118 BPM**: Brani Dark Disco, Indie Dance o EBM lenta (mondo *Atomnation*, *Duro*, *Correspondant*, suonati da Âme/Dixon) caratterizzati da arpeggiatori sintetici ossessivi, bassi compressi e tonalità scure (es. 11A, 7A, 12A) **NON sono Warm Up**.
+  * Se suonati a inizio serata creano ansia e pesantezza fuori luogo; se suonati a metà set a pista piena fungono da **`[2-3A] Tension Bridges`** per rallentare il tempo senza perdere intensità, creando un ponte di drammaticità ipnotica prima del climax.
 
 * **NO (Scarto - Filler Tecnico & Troppo Freddo)**:
   * Scartati i brani puramente meccanici, l'electro secca priva di melodia (*Einstein*), il minimal funk anonimo (*Grit Wave*) o il funk troppo giocoso/banale (*Oreo Cake*).
