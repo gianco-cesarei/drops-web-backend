@@ -12,7 +12,7 @@ import urllib.error
 from typing import List, Dict, Any
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-MODEL_NAME = "gemini-3.6-flash"
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 SSL_CTX = ssl._create_unverified_context()
 
@@ -48,6 +48,11 @@ COMPORTAMENTO E TONO:
    - A che punto della serata ti trovi? (es. inizio serata/warm up rilassato, passaggio morbido al guest, ora di punta della sala o traccia finale per chiudere)
    - Che timbro ritmico o atmosfera cerchi? (es. rolling bass ipnotico, tensione scura e sospesa, kick detonante, o un elemento bizzarro/mentale)
 5. RACCOMANDAZIONE PROFONDA: Una volta capite le risposte, consiglia 2 tracce spiegando l'incastro armonico (Camelot Wheel) e la funzione acustica sulla pista.
+6. 🔗 LINK DI ASCOLTO DIRETTO (PRIORITÀ A CASCATA: BANDCAMP ➔ SOUNDCLOUD ➔ YOUTUBE):
+   Per OGNI traccia o release consigliata, allega sempre UN SOLO LINK DIRETTO cliccabile nel formato [Ascolta su Piattaforma](url) scegliendo il primo servizio disponibile secondo questa gerarchia:
+   1) Bandcamp (Priorità 1 assoluta per musica underground): https://bandcamp.com/search?q=ARTISTA+TITOLO
+   2) SoundCloud (Priorità 2, se non reperibile su Bandcamp o se è un vinyl rip): https://soundcloud.com/search/sounds?q=ARTISTA+TITOLO
+   3) YouTube (Priorità 3, solo come fallback di riserva): https://www.youtube.com/results?search_query=ARTISTA+TITOLO
 """
 
 def chat_with_curator(messages: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -70,7 +75,7 @@ def chat_with_curator(messages: List[Dict[str, str]]) -> Dict[str, Any]:
         "contents": contents,
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": 800
+            "maxOutputTokens": 2048
         }
     }
 
