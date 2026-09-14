@@ -95,3 +95,21 @@ Per alimentare le ricerche future di DropAgent con massima selettività:
   * *The MUDD Show* (Set video grezzi e curatissimi: DC Salas, Kiosk Radio)
   * *Trommel* (Il punto di riferimento giornalistico ed editoriale per la microhouse europea)
   * *Late Night Workout* (Sound clubbing ipnotico ed elegante)
+
+---
+
+## 7. Il Filtro di Calibrazione: Elettronica dell'Anima vs Filler Meccanico
+
+Le conferme e gli scarti del selector definiscono la linea di demarcazione estetica:
+
+* **SÌ (Accettazione Immediata - Anima Analogica & Malinconia Elettronica)**:
+  * *Alexander Robotnick - Addio Addio, Virtual Empathy, Simple Music, It's So Easy*
+  * *Lapucci - Level Of Reality*
+  * *Feel Fly - Peach*
+  * *The Mechanical Man - The Magic Number*
+  * *Data Memory Access - Controller*
+  * **Elementi distintivi**: Slap bass rotondi, sintetizzatori analogici caldi, arpeggiatori nostalgici anni '80/'90, melodie che toccano corde emotive profonde, vocalità sussurrate o distaccate, assenza di drop commerciali.
+
+* **NO (Scarto - Filler Tecnico & Troppo Freddo)**:
+  * Scartati i brani puramente meccanici, l'electro secca priva di melodia (*Einstein*), il minimal funk anonimo (*Grit Wave*) o il funk troppo giocoso/banale (*Oreo Cake*).
+  * **Regola di selezione**: Una traccia deve possedere o una tensione ipnotica trascendente o una struggente bellezza melodica/analogica. Se è solo un loop per riempire spazio, viene esclusa.

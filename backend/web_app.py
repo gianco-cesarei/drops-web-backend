@@ -2283,4 +2283,24 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         msgs = [{"role": m.role, "content": m.content} for m in request.messages]
         return chat_with_curator(msgs)
 
+    @app.get("/api/v1/curator/listen")
+    def curator_listen(q: str = "", platform: str = "youtube"):
+        query = (q or "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="Parametro q mancante")
+        try:
+            req = urllib.request.Request(
+                f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}",
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+                m = re.search(r"/watch\?v=([a-zA-Z0-9_-]{11})", html)
+                if m:
+                    return RedirectResponse(url=f"https://www.youtube.com/watch?v={m.group(1)}", status_code=302)
+        except Exception:
+            pass
+        return RedirectResponse(url=f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}", status_code=302)
+
     return app
+
