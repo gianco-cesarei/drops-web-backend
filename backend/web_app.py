@@ -53,6 +53,7 @@ from spotify_agent import SpotifyAgentError, WebSpotifyClient
 from track_store import TrackStore
 from web_settings import WebSettings
 from web_store import WebStore
+from curator_bot import chat_with_curator
 
 COOKIE_NAME = "drops_session"
 logger = logging.getLogger("drops.web")
@@ -329,6 +330,15 @@ class FolderCreateRequest(BaseModel):
 
 class FolderRenameRequest(BaseModel):
     name: str
+
+
+class CuratorMessage(BaseModel):
+    role: str
+    content: str
+
+
+class CuratorChatRequest(BaseModel):
+    messages: list[CuratorMessage]
 
 
 def _youtube_url_context(value: str) -> dict[str, str | None]:
@@ -2267,5 +2277,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         if not deleted:
             raise HTTPException(status_code=404, detail="Cartella non trovata")
         return {"status": "deleted", "id": folder_id}
+ 
+    @app.post("/api/v1/curator/chat")
+    def curator_chat(request: CuratorChatRequest):
+        msgs = [{"role": m.role, "content": m.content} for m in request.messages]
+        return chat_with_curator(msgs)
 
     return app
