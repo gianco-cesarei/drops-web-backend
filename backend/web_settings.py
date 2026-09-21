@@ -73,7 +73,11 @@ class WebSettings:
             raise ValueError("DROPS_WEB_USERNAME and DROPS_WEB_PASSWORD_HASH are required")
         if not password_hash.startswith("$argon2id$"):
             raise ValueError("DROPS_WEB_PASSWORD_HASH must be an Argon2id hash")
-        origins = tuple(x.strip() for x in os.environ.get("DROPS_WEB_ALLOWED_ORIGINS", "").split(",") if x.strip())
+        origins_list = [x.strip() for x in os.environ.get("DROPS_WEB_ALLOWED_ORIGINS", "").split(",") if x.strip()]
+        for known_origin in ("https://drops.musicagent.workers.dev", "https://drops.giancarlocesarei.workers.dev"):
+            if known_origin not in origins_list:
+                origins_list.append(known_origin)
+        origins = tuple(origins_list)
         state_dir = Path(os.environ.get("DROPS_WEB_STATE_DIR", Path(tempfile.gettempdir()) / "drops-web")).expanduser()
         return cls(
             username=username,
