@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 DISCOGS_API = "https://api.discogs.com"
-DEFAULT_USER_AGENT = "Drops/1.0 +https://drops.giancarlocesarei.workers.dev"
+DEFAULT_USER_AGENT = "Drops/1.0 +https://drops.musicagent.workers.dev"
 logger = logging.getLogger("drops.discogs")
 
 

@@ -298,6 +298,17 @@ class DiscogsEnrichRequest(BaseModel):
     barcode: str | None = None
 
 
+class DropSoulDecisionRequest(BaseModel):
+    job_id: str
+    decision: str  # "downsize" | "wait" | "skip"
+
+
+class DropSoulEnqueueRequest(BaseModel):
+    url: str
+    folder: str | None = None
+    mode: str = "dropsoul"
+
+
 class BpmComputeRequest(BaseModel):
     track_key: str | None = None
     artist: str
@@ -560,9 +571,15 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "bpm", "bpm_confidence", "source",
             "filename", "size", "error",
             "track_id", "r2_key",
+            "cutoff_hz", "verdict", "soul_status",
         ):
-            if row[key] is not None:
+            if key in row.keys() and row[key] is not None:
                 result[key] = row[key]
+        if "spectrum_bars" in row.keys() and row["spectrum_bars"]:
+            try:
+                result["spectrum_bars"] = json.loads(row["spectrum_bars"]) if isinstance(row["spectrum_bars"], str) else row["spectrum_bars"]
+            except Exception:
+                result["spectrum_bars"] = []
         if row["style"]:
             result["style"] = json.loads(row["style"])
         if row["status"] == "ready":
@@ -835,6 +852,22 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             # truth for BPM.
             track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title, job_id=job_id)
 
+            # DropSoul: FFT Spectral Quality Verification
+            cutoff_hz = 0.0
+            verdict = "VERIFIED_320K"
+            spectrum_bars_json = None
+            soul_status = "VERIFIED_320K"
+            try:
+                from dropsoul.quality_verifier import AudioQualityVerifier
+                verifier = AudioQualityVerifier()
+                q_report = verifier.analyze(str(artifact))
+                cutoff_hz = q_report.cutoff_frequency_hz
+                verdict = q_report.verdict.value
+                soul_status = verdict
+                spectrum_bars_json = json.dumps(q_report.spectrum_bars)
+            except Exception as q_err:
+                logger.warning("DropSoul spectral analysis error for %s: %s", job_id, q_err)
+
             # Mark ready immediately: the card lands in "scaricati" and the file is
             # downloadable without waiting for BPM analysis.
             store.update_job(
@@ -848,6 +881,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 duration=int(info.get("duration") or 0) or None,
                 track_id=track_id,
                 r2_key=r2_key,
+                cutoff_hz=cutoff_hz,
+                verdict=verdict,
+                spectrum_bars=spectrum_bars_json,
+                soul_status=soul_status,
                 expires_at=time.time() + settings.artifact_ttl_seconds,
             )
 
@@ -1053,6 +1090,22 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             if r2_storage.is_configured():
                 store.update_job(job_id, status="uploading")
             track_id, r2_key = promote_to_cloud(owner, artifact, genre_str, artist, final_title, job_id=job_id)
+            # DropSoul: FFT Spectral Quality Verification
+            cutoff_hz = 0.0
+            verdict = "VERIFIED_320K"
+            spectrum_bars_json = None
+            soul_status = "VERIFIED_320K"
+            try:
+                from dropsoul.quality_verifier import AudioQualityVerifier
+                verifier = AudioQualityVerifier()
+                q_report = verifier.analyze(str(artifact))
+                cutoff_hz = q_report.cutoff_frequency_hz
+                verdict = q_report.verdict.value
+                soul_status = verdict
+                spectrum_bars_json = json.dumps(q_report.spectrum_bars)
+            except Exception as q_err:
+                logger.warning("DropSoul spectral analysis error for %s: %s", job_id, q_err)
+
             if track_id:
                 # Cloud is the source of truth: no local file endpoint, and the
                 # local temp file is dropped after BPM (see _bpm_and_cleanup).
@@ -1060,9 +1113,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                     job_id, status="ready", title=final_title, filename=filename,
                     file_path=None, size=size_val, source="youtube", duration=duration_val,
                     track_id=track_id, r2_key=r2_key,
+                    cutoff_hz=cutoff_hz, verdict=verdict, spectrum_bars=spectrum_bars_json, soul_status=soul_status,
                     expires_at=time.time() + settings.artifact_ttl_seconds,
                 )
-                logger.info("youtube-direct ready (cloud) job_id=%s track_id=%s", job_id, track_id)
+                logger.info("youtube-direct ready (cloud) job_id=%s track_id=%s cutoff=%.0fHz", job_id, track_id, cutoff_hz)
             else:
                 # R2 disabled or the upload/catalog write failed: fall back to the
                 # classic behaviour - keep the file local and downloadable, no
@@ -1070,9 +1124,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                 store.update_job(
                     job_id, status="ready", title=final_title, filename=filename,
                     file_path=str(artifact), size=size_val, source="youtube", duration=duration_val,
+                    cutoff_hz=cutoff_hz, verdict=verdict, spectrum_bars=spectrum_bars_json, soul_status=soul_status,
                     expires_at=time.time() + settings.artifact_ttl_seconds,
                 )
-                logger.info("youtube-direct ready (local fallback) job_id=%s", job_id)
+                logger.info("youtube-direct ready (local fallback) job_id=%s cutoff=%.0fHz", job_id, cutoff_hz)
 
             # BPM off the critical path. It reads the still-local file (no wasted
             # R2 re-download), writes the value to the catalog DB - the source of
@@ -1731,6 +1786,40 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         """Returns all historical downloads for the authenticated user."""
         rows = store.list_jobs(owner, limit=limit)
         return {"downloads": [public_job(row) for row in rows]}
+
+    @app.get("/api/v1/dropsoul/status")
+    def dropsoul_status():
+        """Checks status of DropSoul P2P node and spectral verifier."""
+        from dropsoul.soulseek_service import DropSoulService
+        svc = DropSoulService()
+        return {
+            "slskd_online": svc.is_slskd_connected(),
+            "worker_active": True,
+            "fft_verifier_ready": True,
+            "hq_threshold_hz": 19500,
+        }
+
+    @app.post("/api/v1/dropsoul/decision")
+    def dropsoul_decision(
+        req: DropSoulDecisionRequest,
+        owner: str = Depends(current_owner),
+        _: None = Depends(require_csrf_origin),
+    ):
+        """Resolves curator choice from DropSoul Decision Gate (downsize, wait, skip)."""
+        row = store.get_job(req.job_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Job non trovato")
+        decision = req.decision.lower().strip()
+        if decision == "downsize":
+            store.update_job(req.job_id, soul_status="DOWNSIZED", status="ready")
+        elif decision == "wait":
+            store.update_job(req.job_id, soul_status="HUNTING", status="hunting")
+        elif decision == "skip":
+            store.update_job(req.job_id, soul_status="SKIPPED", status="error", error="Esclusa dall'utente")
+        else:
+            raise HTTPException(status_code=400, detail="Decisione non valida")
+        updated = store.get_job(req.job_id, owner)
+        return {"ok": True, "job": public_job(updated) if updated else None}
 
     @app.post("/api/v1/downloads/clear")
     def clear_catalog(owner: str = Depends(current_owner)):

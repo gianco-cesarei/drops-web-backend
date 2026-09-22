@@ -42,7 +42,7 @@ class WebStore:
             # fresh DB). Render's free tier recreates the DB each deploy, but a
             # long-lived local dev DB needs these backfilled.
             existing = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
-            for column in ("track_id", "r2_key"):
+            for column in ("track_id", "r2_key", "cutoff_hz", "verdict", "spectrum_bars", "soul_status"):
                 if column not in existing:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
 
